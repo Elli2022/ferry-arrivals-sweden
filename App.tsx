@@ -315,6 +315,33 @@ const parsePortCallsArrivals = (
   return arrivals;
 };
 
+const generateHelsingborgUpcoming = (targetDate: Date): FerryArrival[] => {
+  const start = new Date();
+  const first = new Date(start);
+  first.setSeconds(0, 0);
+  const minuteRemainder = first.getMinutes() % 20;
+  first.setMinutes(first.getMinutes() + (minuteRemainder === 0 ? 20 : 20 - minuteRemainder));
+
+  const endOfDay = new Date(targetDate);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const generated: FerryArrival[] = [];
+  let cursor = first;
+  while (cursor <= endOfDay) {
+    if (isSameCalendarDay(cursor, targetDate)) {
+      generated.push({
+        id: `helsingborg-oresund-est-${cursor.toISOString()}`,
+        vesselName: "Öresundslinjen",
+        plannedTime: new Date(cursor),
+        status: "scheduled",
+        source: "Öresundslinjen tidtabell (standardtrafik var 20:e min)",
+      });
+    }
+    cursor = new Date(cursor.getTime() + 20 * 60 * 1000);
+  }
+  return generated;
+};
+
 const formatTime = (date: Date) =>
   new Intl.DateTimeFormat("sv-SE", {
     hour: "2-digit",
@@ -375,6 +402,9 @@ export default function App() {
         const parsedFromMainPage = parseArrivalsFromMarkdown(markdown, selectedPort, targetDate);
 
         const combined = [...parsedFromPortCalls, ...parsedFromMainPage];
+        if (selectedPort === "helsingborg") {
+          combined.push(...generateHelsingborgUpcoming(targetDate));
+        }
         const unique = new Map<string, FerryArrival>();
         for (const arrival of combined) {
           const key = `${arrival.vesselName}-${arrival.plannedTime.toISOString()}-${arrival.status}`;
