@@ -139,13 +139,9 @@ const extractOresundTrafficInfo = (text: string): TrafficInfo | null => {
   };
 };
 
-const isToday = (date: Date) => {
-  const now = new Date();
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-  );
+const isIn24HourWindow = (date: Date) => {
+  const hours24 = 24 * 60 * 60 * 1000;
+  return Math.abs(Date.now() - date.getTime()) <= hours24;
 };
 
 const getStatusFromEta = (plannedTime: Date): FerryStatus => {
@@ -185,7 +181,7 @@ const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArriv
         continue;
       }
       const plannedTime = parseDate(cells[1]);
-      if (!plannedTime || !isToday(plannedTime)) {
+      if (!plannedTime || !isIn24HourWindow(plannedTime)) {
         continue;
       }
       const vesselName = extractVesselName(cells[0]);
@@ -208,7 +204,7 @@ const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArriv
         continue;
       }
       const plannedTime = parseDate(cells[0]);
-      if (!plannedTime || !isToday(plannedTime)) {
+      if (!plannedTime || !isIn24HourWindow(plannedTime)) {
         continue;
       }
       const vesselName = extractVesselName(cells[2]);
@@ -235,7 +231,7 @@ const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArriv
       continue;
     }
     const plannedTime = parseDate(cells[2]);
-    if (!plannedTime || !isToday(plannedTime)) {
+      if (!plannedTime || !isIn24HourWindow(plannedTime)) {
       continue;
     }
 
@@ -481,7 +477,7 @@ export default function App() {
 
         <Text style={styles.note}>
           Ankommen = faktisk registrerad ankomst i feeden. Estimerad/Försenad = beräknad ETA.
-          Tabellen visar 24h för aktuellt dygn (00:00-23:59) och filtrerar till passagerarfärjor.
+          Tabellen visar ett rullande 24h-fönster och filtrerar till passagerarfärjor.
         </Text>
       </ScrollView>
     </SafeAreaView>
