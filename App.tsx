@@ -158,6 +158,12 @@ const isSameCalendarDay = (date: Date, targetDate: Date) => {
   );
 };
 
+const startOfDay = (date: Date) => {
+  const value = new Date(date);
+  value.setHours(0, 0, 0, 0);
+  return value;
+};
+
 const getStatusFromEta = (plannedTime: Date): FerryStatus => {
   const delayThresholdMinutes = 20;
   const diff = Date.now() - plannedTime.getTime();
@@ -316,11 +322,23 @@ const parsePortCallsArrivals = (
 };
 
 const generateHelsingborgUpcoming = (targetDate: Date): FerryArrival[] => {
-  const start = new Date();
-  const first = new Date(start);
+  const now = new Date();
+  const selectedDayStart = startOfDay(targetDate);
+  const todayStart = startOfDay(now);
+
+  if (selectedDayStart < todayStart) {
+    return [];
+  }
+
+  const first = isSameCalendarDay(targetDate, now) ? new Date(now) : new Date(targetDate);
   first.setSeconds(0, 0);
   const minuteRemainder = first.getMinutes() % 20;
-  first.setMinutes(first.getMinutes() + (minuteRemainder === 0 ? 20 : 20 - minuteRemainder));
+  if (minuteRemainder !== 0) {
+    first.setMinutes(first.getMinutes() + (20 - minuteRemainder));
+  }
+  if (isSameCalendarDay(targetDate, now) && minuteRemainder === 0) {
+    first.setMinutes(first.getMinutes() + 20);
+  }
 
   const endOfDay = new Date(targetDate);
   endOfDay.setHours(23, 59, 59, 999);
@@ -356,6 +374,7 @@ const statusLabel: Record<FerryStatus, string> = {
 
 export default function App() {
   const [selectedPort, setSelectedPort] = useState<PortId>("trelleborg");
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [arrivals, setArrivals] = useState<FerryArrival[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -393,7 +412,7 @@ export default function App() {
         }
         const markdown = await arrivalsResponse.text();
         const portCallsMarkdown = await portCallsResponse.text();
-        const targetDate = new Date();
+        const targetDate = selectedDate;
         const parsedFromPortCalls = parsePortCallsArrivals(
           portCallsMarkdown,
           selectedPort,
@@ -433,7 +452,7 @@ export default function App() {
         setIsRefreshing(false);
       }
     },
-    [selectedPort, selectedPortConfig.sourceUrl]
+    [selectedDate, selectedPort, selectedPortConfig.arrivalsUrl, selectedPortConfig.sourceUrl]
   );
 
   useEffect(() => {
@@ -447,15 +466,24 @@ export default function App() {
     return () => clearInterval(interval);
   }, [fetchArrivals]);
 
-  const todayLabel = useMemo(
+  const dateLabel = useMemo(
     () =>
       new Intl.DateTimeFormat("sv-SE", {
         weekday: "long",
         day: "numeric",
         month: "long",
-      }).format(new Date()),
-    []
+        year: "numeric",
+      }).format(selectedDate),
+    [selectedDate]
   );
+
+  const shiftDate = (days: number) => {
+    setSelectedDate((prev) => {
+      const next = new Date(prev);
+      next.setDate(next.getDate() + days);
+      return next;
+    });
+  };
 
   const arrivedArrivals = arrivals.filter((arrival) => arrival.status === "arrived");
   const upcomingArrivals = arrivals.filter((arrival) => arrival.status !== "arrived");
@@ -465,7 +493,19 @@ export default function App() {
       <StatusBar style="light" />
       <View style={styles.header}>
         <Text style={styles.title}>Färjeankomster</Text>
-        <Text style={styles.subtitle}>{todayLabel}</Text>
+        <Text style={styles.subtitle}>{dateLabel}</Text>
+      </View>
+
+      <View style={styles.dateRow}>
+        <Pressable style={styles.dateButton} onPress={() => shiftDate(-1)}>
+          <Text style={styles.dateButtonText}>-1 dag</Text>
+        </Pressable>
+        <Pressable style={styles.dateButton} onPress={() => setSelectedDate(new Date())}>
+          <Text style={styles.dateButtonText}>Idag</Text>
+        </Pressable>
+        <Pressable style={styles.dateButton} onPress={() => shiftDate(1)}>
+          <Text style={styles.dateButtonText}>+1 dag</Text>
+        </Pressable>
       </View>
 
       <View style={styles.tabRow}>
@@ -583,7 +623,7 @@ export default function App() {
 
         <Text style={styles.note}>
           Ankommen = faktisk registrerad ankomst i feeden. Estimerad/Försenad = beräknad ETA.
-          Tabellen visar hela kalenderdygnet för idag (00:00-23:59) och filtrerar till
+          Tabellen visar hela kalenderdygnet för valt datum (00:00-23:59) och filtrerar till
           passagerarfärjor.
         </Text>
       </ScrollView>
@@ -617,6 +657,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     gap: 8,
+  },
+  dateRow: {
+    flexDirection: "row",
+    paddingHorizontal: 12,
+    gap: 8,
+    paddingBottom: 6,
+  },
+  dateButton: {
+    flex: 1,
+    alignItems: "center",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0f172a",
+    paddingVertical: 8,
+  },
+  dateButtonText: {
+    color: "#bfdbfe",
+    fontWeight: "600",
+    fontSize: 13,
   },
   tab: {
     flex: 1,
