@@ -288,18 +288,18 @@ const parsePortCallsArrivals = (
   const arrivals: FerryArrival[] = [];
 
   for (const row of rows) {
-    if (!row.includes("|Arrival|")) {
+    if (!/\|\s*Arrival\s*\|/i.test(row)) {
       continue;
     }
     const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
-    if (cells.length < 5) {
+    if (cells.length < 4) {
       continue;
     }
-    const plannedTime = parseDate(cells[2]);
+    const plannedTime = parseDate(cells[1]);
     if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
       continue;
     }
-    const vesselName = extractVesselName(cells[4]);
+    const vesselName = extractVesselName(cells[3]);
     if (!vesselName || !isPassengerFerry(portId, vesselName)) {
       continue;
     }
