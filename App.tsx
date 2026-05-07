@@ -25,6 +25,7 @@ type FerryArrival = {
 type PortConfig = {
   name: string;
   sourceUrl: string;
+  arrivalsUrl: string;
   trafficUrl?: string;
 };
 
@@ -39,16 +40,22 @@ const PORTS: Record<PortId, PortConfig> = {
     name: "Ystad",
     sourceUrl:
       "https://r.jina.ai/http://www.myshiptracking.com/ports/port-of-ystad-in-se-sweden-id-2225",
+    arrivalsUrl:
+      "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
   },
   trelleborg: {
     name: "Trelleborg",
     sourceUrl:
       "https://r.jina.ai/http://myshiptracking.com/ports/port-of-trelleborg-in-se-sweden-id-427",
+    arrivalsUrl:
+      "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
   },
   helsingborg: {
     name: "Helsingborg",
     sourceUrl:
       "https://r.jina.ai/http://www.myshiptracking.com/ports/port-of-helsingborg-in-se-sweden-id-209",
+    arrivalsUrl:
+      "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=209&type=1",
     trafficUrl: "https://r.jina.ai/http://www.oresundslinjen.se/trafikinformation",
   },
 };
@@ -67,6 +74,10 @@ const PASSENGER_FERRY_KEYWORDS: Record<PortId, string[]> = {
     "huckleberry finn",
     "robin hood",
     "akca",
+    "akka",
+    "epsilon",
+    "marco polo",
+    "jantar unity",
     "copernicus",
   ],
   helsingborg: [
@@ -139,9 +150,12 @@ const extractOresundTrafficInfo = (text: string): TrafficInfo | null => {
   };
 };
 
-const isIn24HourWindow = (date: Date) => {
-  const hours24 = 24 * 60 * 60 * 1000;
-  return Math.abs(Date.now() - date.getTime()) <= hours24;
+const isSameCalendarDay = (date: Date, targetDate: Date) => {
+  return (
+    date.getFullYear() === targetDate.getFullYear() &&
+    date.getMonth() === targetDate.getMonth() &&
+    date.getDate() === targetDate.getDate()
+  );
 };
 
 const getStatusFromEta = (plannedTime: Date): FerryStatus => {
@@ -153,7 +167,11 @@ const getStatusFromEta = (plannedTime: Date): FerryStatus => {
   return "scheduled";
 };
 
-const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArrival[] => {
+const parseArrivalsFromMarkdown = (
+  markdown: string,
+  portId: PortId,
+  targetDate: Date
+): FerryArrival[] => {
   const rows = markdown.split("\n");
   const arrivals: FerryArrival[] = [];
   let inVesselsInPortSection = false;
@@ -181,7 +199,7 @@ const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArriv
         continue;
       }
       const plannedTime = parseDate(cells[1]);
-      if (!plannedTime || !isIn24HourWindow(plannedTime)) {
+      if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
         continue;
       }
       const vesselName = extractVesselName(cells[0]);
@@ -204,7 +222,7 @@ const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArriv
         continue;
       }
       const plannedTime = parseDate(cells[0]);
-      if (!plannedTime || !isIn24HourWindow(plannedTime)) {
+      if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
         continue;
       }
       const vesselName = extractVesselName(cells[2]);
@@ -231,7 +249,7 @@ const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArriv
       continue;
     }
     const plannedTime = parseDate(cells[2]);
-      if (!plannedTime || !isIn24HourWindow(plannedTime)) {
+    if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
       continue;
     }
 
@@ -259,6 +277,42 @@ const parseArrivalsFromMarkdown = (markdown: string, portId: PortId): FerryArriv
   return Array.from(unique.values()).sort(
     (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
   );
+};
+
+const parsePortCallsArrivals = (
+  markdown: string,
+  portId: PortId,
+  targetDate: Date
+): FerryArrival[] => {
+  const rows = markdown.split("\n");
+  const arrivals: FerryArrival[] = [];
+
+  for (const row of rows) {
+    if (!row.includes("|Arrival|")) {
+      continue;
+    }
+    const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
+    if (cells.length < 5) {
+      continue;
+    }
+    const plannedTime = parseDate(cells[2]);
+    if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
+      continue;
+    }
+    const vesselName = extractVesselName(cells[4]);
+    if (!vesselName || !isPassengerFerry(portId, vesselName)) {
+      continue;
+    }
+    arrivals.push({
+      id: `${portId}-portcalls-${vesselName}-${plannedTime.toISOString()}`,
+      vesselName,
+      plannedTime,
+      status: "arrived",
+      source: "MyShipTracking port calls (arrivals)",
+    });
+  }
+
+  return arrivals;
 };
 
 const formatTime = (date: Date) =>
@@ -295,22 +349,44 @@ export default function App() {
       try {
         setError(null);
         const arrivalsPromise = fetch(selectedPortConfig.sourceUrl);
+        const portCallsPromise = fetch(selectedPortConfig.arrivalsUrl);
         const trafficPromise =
           selectedPort === "helsingborg" && selectedPortConfig.trafficUrl
             ? fetch(selectedPortConfig.trafficUrl)
             : Promise.resolve(null);
 
-        const [arrivalsResponse, trafficResponse] = await Promise.all([
+        const [arrivalsResponse, portCallsResponse, trafficResponse] = await Promise.all([
           arrivalsPromise,
+          portCallsPromise,
           trafficPromise,
         ]);
 
-        if (!arrivalsResponse.ok) {
+        if (!arrivalsResponse.ok || !portCallsResponse.ok) {
           throw new Error("Kunde inte läsa data från källan");
         }
         const markdown = await arrivalsResponse.text();
-        const parsed = parseArrivalsFromMarkdown(markdown, selectedPort);
-        setArrivals(parsed);
+        const portCallsMarkdown = await portCallsResponse.text();
+        const targetDate = new Date();
+        const parsedFromPortCalls = parsePortCallsArrivals(
+          portCallsMarkdown,
+          selectedPort,
+          targetDate
+        );
+        const parsedFromMainPage = parseArrivalsFromMarkdown(markdown, selectedPort, targetDate);
+
+        const combined = [...parsedFromPortCalls, ...parsedFromMainPage];
+        const unique = new Map<string, FerryArrival>();
+        for (const arrival of combined) {
+          const key = `${arrival.vesselName}-${arrival.plannedTime.toISOString()}-${arrival.status}`;
+          if (!unique.has(key)) {
+            unique.set(key, arrival);
+          }
+        }
+        setArrivals(
+          Array.from(unique.values()).sort(
+            (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
+          )
+        );
 
         if (trafficResponse?.ok) {
           const trafficText = await trafficResponse.text();
@@ -477,7 +553,8 @@ export default function App() {
 
         <Text style={styles.note}>
           Ankommen = faktisk registrerad ankomst i feeden. Estimerad/Försenad = beräknad ETA.
-          Tabellen visar ett rullande 24h-fönster och filtrerar till passagerarfärjor.
+          Tabellen visar hela kalenderdygnet för idag (00:00-23:59) och filtrerar till
+          passagerarfärjor.
         </Text>
       </ScrollView>
     </SafeAreaView>
