@@ -1,7 +1,10 @@
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
+  Platform,
   Pressable,
   RefreshControl,
   SafeAreaView,
@@ -60,7 +63,7 @@ const PORTS: Record<PortId, PortConfig> = {
   },
 };
 
-const AUTO_REFRESH_MS = 60_000;
+const AUTO_REFRESH_MS = 30_000;
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
 const PASSENGER_FERRY_KEYWORDS: Record<PortId, string[]> = {
@@ -162,6 +165,33 @@ const startOfDay = (date: Date) => {
   const value = new Date(date);
   value.setHours(0, 0, 0, 0);
   return value;
+};
+
+const calendarDayDiff = (a: Date, b: Date) => {
+  const startA = startOfDay(a).getTime();
+  const startB = startOfDay(b).getTime();
+  return Math.round((startA - startB) / 86_400_000);
+};
+
+const arrivalsTitleForDate = (selectedDate: Date, portName: string) => {
+  const today = new Date();
+  const diff = calendarDayDiff(selectedDate, today);
+  if (diff === 0) {
+    return `Ankomster idag – ${portName}`;
+  }
+  if (diff === 1) {
+    return `Ankomster imorgon – ${portName}`;
+  }
+  if (diff === -1) {
+    return `Ankomster i går – ${portName}`;
+  }
+  const formatted = new Intl.DateTimeFormat("sv-SE", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(selectedDate);
+  return `Ankomster ${formatted} – ${portName}`;
 };
 
 const getStatusFromEta = (plannedTime: Date): FerryStatus => {
@@ -374,7 +404,9 @@ const statusLabel: Record<FerryStatus, string> = {
 
 export default function App() {
   const [selectedPort, setSelectedPort] = useState<PortId>("trelleborg");
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()));
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [iosPickerDraft, setIosPickerDraft] = useState<Date>(() => startOfDay(new Date()));
   const [arrivals, setArrivals] = useState<FerryArrival[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -477,12 +509,14 @@ export default function App() {
     [selectedDate]
   );
 
-  const shiftDate = (days: number) => {
-    setSelectedDate((prev) => {
-      const next = new Date(prev);
-      next.setDate(next.getDate() + days);
-      return next;
-    });
+  const arrivalsSectionTitle = useMemo(
+    () => arrivalsTitleForDate(selectedDate, selectedPortConfig.name),
+    [selectedDate, selectedPortConfig.name]
+  );
+
+  const openDatePicker = () => {
+    setIosPickerDraft(selectedDate);
+    setDatePickerOpen(true);
   };
 
   const arrivedArrivals = arrivals.filter((arrival) => arrival.status === "arrived");
@@ -497,14 +531,15 @@ export default function App() {
       </View>
 
       <View style={styles.dateRow}>
-        <Pressable style={styles.dateButton} onPress={() => shiftDate(-1)}>
-          <Text style={styles.dateButtonText}>-1 dag</Text>
+        <Pressable style={styles.datePickerMain} onPress={openDatePicker}>
+          <Text style={styles.datePickerHint}>Kalender</Text>
+          <Text style={styles.datePickerValue}>{dateLabel}</Text>
         </Pressable>
-        <Pressable style={styles.dateButton} onPress={() => setSelectedDate(new Date())}>
-          <Text style={styles.dateButtonText}>Idag</Text>
-        </Pressable>
-        <Pressable style={styles.dateButton} onPress={() => shiftDate(1)}>
-          <Text style={styles.dateButtonText}>+1 dag</Text>
+        <Pressable
+          style={styles.dateTodayButton}
+          onPress={() => setSelectedDate(startOfDay(new Date()))}
+        >
+          <Text style={styles.dateTodayText}>Idag</Text>
         </Pressable>
       </View>
 
@@ -535,10 +570,15 @@ export default function App() {
           />
         }
       >
-        <Text style={styles.sectionTitle}>Ankomster idag - {selectedPortConfig.name}</Text>
+        <Text style={styles.sectionTitle}>{arrivalsSectionTitle}</Text>
         {lastUpdated ? (
           <Text style={styles.lastUpdated}>Senast uppdaterad {formatTime(lastUpdated)}</Text>
         ) : null}
+        <View style={styles.freeRealtimeBanner}>
+          <Text style={styles.freeRealtimeText}>
+            Gratis live-läge: publik hamn/operatörsdata (ingen betald API-nyckel).
+          </Text>
+        </View>
         {selectedPort === "helsingborg" && trafficInfo ? (
           <View
             style={[
@@ -562,7 +602,9 @@ export default function App() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         {!isLoading && !error && arrivals.length === 0 ? (
-          <Text style={styles.helperText}>Inga ankomster hittades för idag.</Text>
+          <Text style={styles.helperText}>
+            Inga ankomster hittades för valt datum ({dateLabel}).
+          </Text>
         ) : null}
 
         {!isLoading && !error && arrivedArrivals.length > 0 ? (
@@ -627,6 +669,58 @@ export default function App() {
           passagerarfärjor.
         </Text>
       </ScrollView>
+
+      {datePickerOpen && Platform.OS === "android" ? (
+        <DateTimePicker
+          value={selectedDate}
+          mode="date"
+          display="default"
+          onChange={(event, date) => {
+            setDatePickerOpen(false);
+            if (event.type === "set" && date) {
+              setSelectedDate(startOfDay(date));
+            }
+          }}
+        />
+      ) : null}
+
+      <Modal
+        visible={datePickerOpen && (Platform.OS === "ios" || Platform.OS === "web")}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDatePickerOpen(false)}
+      >
+        <View style={styles.dateModalRoot}>
+          <Pressable style={styles.dateModalBackdrop} onPress={() => setDatePickerOpen(false)} />
+          <View style={styles.dateModalCard}>
+            <Text style={styles.dateModalTitle}>Välj datum</Text>
+            <DateTimePicker
+              value={iosPickerDraft}
+              mode="date"
+              display={Platform.OS === "web" ? "inline" : "spinner"}
+              onChange={(_, date) => {
+                if (date) {
+                  setIosPickerDraft(startOfDay(date));
+                }
+              }}
+            />
+            <View style={styles.dateModalActions}>
+              <Pressable style={styles.dateModalButtonGhost} onPress={() => setDatePickerOpen(false)}>
+                <Text style={styles.dateModalButtonGhostText}>Avbryt</Text>
+              </Pressable>
+              <Pressable
+                style={styles.dateModalButtonPrimary}
+                onPress={() => {
+                  setSelectedDate(startOfDay(iosPickerDraft));
+                  setDatePickerOpen(false);
+                }}
+              >
+                <Text style={styles.dateModalButtonPrimaryText}>Klart</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -663,20 +757,93 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     gap: 8,
     paddingBottom: 6,
+    alignItems: "stretch",
   },
-  dateButton: {
+  datePickerMain: {
     flex: 1,
-    alignItems: "center",
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#334155",
     backgroundColor: "#0f172a",
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
-  dateButtonText: {
-    color: "#bfdbfe",
+  datePickerHint: {
+    color: "#94a3b8",
+    fontSize: 12,
     fontWeight: "600",
-    fontSize: 13,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  datePickerValue: {
+    color: "#f8fafc",
+    fontSize: 15,
+    fontWeight: "700",
+    marginTop: 4,
+    textTransform: "capitalize",
+  },
+  dateTodayButton: {
+    justifyContent: "center",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#1e293b",
+    paddingHorizontal: 14,
+  },
+  dateTodayText: {
+    color: "#bfdbfe",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  dateModalRoot: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  dateModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(2, 6, 23, 0.65)",
+  },
+  dateModalCard: {
+    backgroundColor: "#0f172a",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+    borderTopWidth: 1,
+    borderColor: "#1e293b",
+  },
+  dateModalTitle: {
+    color: "#f8fafc",
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  dateModalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+    marginTop: 12,
+  },
+  dateModalButtonGhost: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  dateModalButtonGhostText: {
+    color: "#94a3b8",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  dateModalButtonPrimary: {
+    backgroundColor: "#2563eb",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+  },
+  dateModalButtonPrimaryText: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 15,
   },
   tab: {
     flex: 1,
@@ -740,6 +907,19 @@ const styles = StyleSheet.create({
   lastUpdated: {
     color: "#94a3b8",
     fontSize: 12,
+  },
+  freeRealtimeBanner: {
+    backgroundColor: "#0b2545",
+    borderColor: "#1d4ed8",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  freeRealtimeText: {
+    color: "#dbeafe",
+    fontSize: 12,
+    fontWeight: "600",
   },
   centered: {
     alignItems: "center",
