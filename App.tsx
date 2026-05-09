@@ -227,17 +227,25 @@ const calendarDayDiff = (a: Date, b: Date) => {
   return Math.round((startA - startB) / 86_400_000);
 };
 
+const weekdayDayMonthSv = (d: Date) =>
+  new Intl.DateTimeFormat("sv-SE", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(d);
+
 const arrivalsTitleForDate = (selectedDate: Date, portName: string) => {
   const today = new Date();
   const diff = calendarDayDiff(selectedDate, today);
+  const dayLabel = weekdayDayMonthSv(selectedDate);
   if (diff === 0) {
-    return `Ankomster idag – ${portName}`;
+    return `Ankomster idag (${dayLabel}) – ${portName}`;
   }
   if (diff === 1) {
-    return `Ankomster imorgon – ${portName}`;
+    return `Ankomster imorgon (${dayLabel}) – ${portName}`;
   }
   if (diff === -1) {
-    return `Ankomster i går – ${portName}`;
+    return `Ankomster i går (${dayLabel}) – ${portName}`;
   }
   const formatted = new Intl.DateTimeFormat("sv-SE", {
     weekday: "long",
@@ -432,10 +440,11 @@ const generateHelsingborgUpcoming = (targetDate: Date): FerryArrival[] => {
     if (isSameCalendarDay(cursor, targetDate)) {
       generated.push({
         id: `helsingborg-oresund-est-${cursor.toISOString()}`,
-        vesselName: "Öresundslinjen",
+        vesselName: "Öresundslinjen (ungefärlig)",
         plannedTime: new Date(cursor),
         status: "scheduled",
-        source: "Öresundslinjen tidtabell (standardtrafik var 20:e min)",
+        source:
+          "Ungefärligt 20-minutersmönster (ej boknings- eller rederitid; jämför ForSea/Öresundslinjen för exakta tider och fartyg).",
       });
     }
     cursor = new Date(cursor.getTime() + 20 * 60 * 1000);
