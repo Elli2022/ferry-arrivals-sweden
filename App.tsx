@@ -167,6 +167,44 @@ const startOfDay = (date: Date) => {
   return value;
 };
 
+/** MyShipTracking-feeden täcker i praktiken igår–imorgon; längre datumval är meningslöst. */
+const SELECTABLE_DAY_OFFSET = 1;
+
+const addCalendarDays = (date: Date, days: number) => {
+  const d = startOfDay(date);
+  d.setDate(d.getDate() + days);
+  return d;
+};
+
+const selectableDayBounds = () => {
+  const today = startOfDay(new Date());
+  return {
+    min: addCalendarDays(today, -SELECTABLE_DAY_OFFSET),
+    max: addCalendarDays(today, SELECTABLE_DAY_OFFSET),
+    today,
+  };
+};
+
+const clampToSelectableDay = (date: Date) => {
+  const { min, max } = selectableDayBounds();
+  const t = startOfDay(date).getTime();
+  if (t < min.getTime()) {
+    return min;
+  }
+  if (t > max.getTime()) {
+    return max;
+  }
+  return startOfDay(date);
+};
+
+const isSelectableCalendarDay = (date: Date) => {
+  const { min, max } = selectableDayBounds();
+  const t = startOfDay(date).getTime();
+  return t >= min.getTime() && t <= max.getTime();
+};
+
+const monthIndex = (d: Date) => d.getFullYear() * 12 + d.getMonth();
+
 const buildMonthGridCells = (viewMonthStart: Date) => {
   const year = viewMonthStart.getFullYear();
   const month = viewMonthStart.getMonth();
@@ -226,27 +264,29 @@ const parseArrivalsFromMarkdown = (
 ): FerryArrival[] => {
   const rows = markdown.split("\n");
   const arrivals: FerryArrival[] = [];
-  let inVesselsInPortSection = false;
+  let section: "none" | "in_port" | "expected" | "activity" = "none";
 
   for (const row of rows) {
-    if (row.includes("### Vessels In Port") || row.includes("### Vessels currently in port")) {
-      inVesselsInPortSection = true;
+    if (row.startsWith("### ")) {
+      if (row.includes("Vessels In Port") || row.includes("Vessels currently in port")) {
+        section = "in_port";
+      } else if (row.includes("Expected Arrivals")) {
+        section = "expected";
+      } else if (row.includes("Activity")) {
+        section = "activity";
+      } else {
+        section = "none";
+      }
       continue;
-    }
-    if (
-      row.startsWith("### Expected Arrivals") ||
-      row.startsWith("### Activity") ||
-      row.startsWith("### Weather")
-    ) {
-      inVesselsInPortSection = false;
     }
 
     if (!row.includes("|")) {
       continue;
     }
 
-    if (inVesselsInPortSection) {
-      const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
+    const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
+
+    if (section === "in_port") {
       if (cells.length < 2 || cells[0] === "Vessel" || cells[0] === "---") {
         continue;
       }
@@ -268,9 +308,11 @@ const parseArrivalsFromMarkdown = (
       continue;
     }
 
-    if (row.includes("| ARRIVAL |")) {
-      const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
-      if (cells.length < 3) {
+    if (section === "activity") {
+      if (cells.length < 3 || cells[0] === "Time" || cells[0] === "---") {
+        continue;
+      }
+      if (!/\bARRIVAL\b/i.test(cells[1] ?? "")) {
         continue;
       }
       const plannedTime = parseDate(cells[0]);
@@ -291,31 +333,26 @@ const parseArrivalsFromMarkdown = (
       continue;
     }
 
-    const expectedPattern = /^\|\s*\d+\s*\|/;
-    if (!expectedPattern.test(row)) {
-      continue;
+    if (section === "expected") {
+      if (cells.length < 3 || cells[0] === "MMSI" || cells[0] === "---") {
+        continue;
+      }
+      const plannedTime = parseDate(cells[2]);
+      if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
+        continue;
+      }
+      const vesselName = extractVesselName(cells[1]);
+      if (!vesselName || !isPassengerFerry(portId, vesselName)) {
+        continue;
+      }
+      arrivals.push({
+        id: `${portId}-expected-${vesselName}-${plannedTime.toISOString()}`,
+        vesselName,
+        plannedTime,
+        status: getStatusFromEta(plannedTime),
+        source: "MyShipTracking expected arrivals",
+      });
     }
-
-    const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
-    if (cells.length < 3) {
-      continue;
-    }
-    const plannedTime = parseDate(cells[2]);
-    if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
-      continue;
-    }
-
-    const vesselName = extractVesselName(cells[1]);
-    if (!vesselName || !isPassengerFerry(portId, vesselName)) {
-      continue;
-    }
-    arrivals.push({
-      id: `${portId}-expected-${vesselName}-${plannedTime.toISOString()}`,
-      vesselName,
-      plannedTime,
-      status: getStatusFromEta(plannedTime),
-      source: "MyShipTracking expected arrivals",
-    });
   }
 
   const unique = new Map<string, FerryArrival>();
@@ -420,9 +457,9 @@ const statusLabel: Record<FerryStatus, string> = {
 
 export default function App() {
   const [selectedPort, setSelectedPort] = useState<PortId>("trelleborg");
-  const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()));
+  const [selectedDate, setSelectedDate] = useState<Date>(() => clampToSelectableDay(new Date()));
   const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const [pendingDate, setPendingDate] = useState<Date>(() => startOfDay(new Date()));
+  const [pendingDate, setPendingDate] = useState<Date>(() => clampToSelectableDay(new Date()));
   const [calendarViewMonth, setCalendarViewMonth] = useState(
     () => new Date(new Date().getFullYear(), new Date().getMonth(), 1)
   );
@@ -434,6 +471,10 @@ export default function App() {
   const [trafficInfo, setTrafficInfo] = useState<TrafficInfo | null>(null);
 
   const selectedPortConfig = PORTS[selectedPort];
+
+  useEffect(() => {
+    setSelectedDate((d) => clampToSelectableDay(d));
+  }, []);
 
   const fetchArrivals = useCallback(
     async (refreshMode = false) => {
@@ -534,10 +575,17 @@ export default function App() {
   );
 
   const openDatePicker = () => {
-    setPendingDate(selectedDate);
-    setCalendarViewMonth(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+    const clamped = clampToSelectableDay(selectedDate);
+    setPendingDate(clamped);
+    setCalendarViewMonth(new Date(clamped.getFullYear(), clamped.getMonth(), 1));
     setDatePickerOpen(true);
   };
+
+  const { min: selectableMin, max: selectableMax } = selectableDayBounds();
+  const selectableMinMonth = new Date(selectableMin.getFullYear(), selectableMin.getMonth(), 1);
+  const selectableMaxMonth = new Date(selectableMax.getFullYear(), selectableMax.getMonth(), 1);
+  const calendarAtMinMonth = monthIndex(calendarViewMonth) <= monthIndex(selectableMinMonth);
+  const calendarAtMaxMonth = monthIndex(calendarViewMonth) >= monthIndex(selectableMaxMonth);
 
   const calendarCells = useMemo(
     () => buildMonthGridCells(calendarViewMonth),
@@ -553,11 +601,23 @@ export default function App() {
   }, [calendarViewMonth]);
 
   const shiftCalendarMonth = (delta: number) => {
-    setCalendarViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+    setCalendarViewMonth((prev) => {
+      const { min, max } = selectableDayBounds();
+      const minMonth = new Date(min.getFullYear(), min.getMonth(), 1);
+      const maxMonth = new Date(max.getFullYear(), max.getMonth(), 1);
+      const next = new Date(prev.getFullYear(), prev.getMonth() + delta, 1);
+      if (monthIndex(next) < monthIndex(minMonth)) {
+        return minMonth;
+      }
+      if (monthIndex(next) > monthIndex(maxMonth)) {
+        return maxMonth;
+      }
+      return next;
+    });
   };
 
   const jumpPendingToToday = () => {
-    const t = startOfDay(new Date());
+    const t = clampToSelectableDay(new Date());
     setPendingDate(t);
     setCalendarViewMonth(new Date(t.getFullYear(), t.getMonth(), 1));
   };
@@ -580,7 +640,7 @@ export default function App() {
         </Pressable>
         <Pressable
           style={styles.dateTodayButton}
-          onPress={() => setSelectedDate(startOfDay(new Date()))}
+          onPress={() => setSelectedDate(clampToSelectableDay(new Date()))}
         >
           <Text style={styles.dateTodayText}>Idag</Text>
         </Pressable>
@@ -619,7 +679,8 @@ export default function App() {
         ) : null}
         <View style={styles.freeRealtimeBanner}>
           <Text style={styles.freeRealtimeText}>
-            Gratis live-läge: publik hamn/operatörsdata (ingen betald API-nyckel).
+            Gratis live-läge från MyShipTracking (rullande lista). Datumväljaren matchar feeden:
+            igår, idag eller imorgon — passagerarfärjor enligt nyckelord.
           </Text>
         </View>
         {selectedPort === "helsingborg" && trafficInfo ? (
@@ -646,7 +707,8 @@ export default function App() {
 
         {!isLoading && !error && arrivals.length === 0 ? (
           <Text style={styles.helperText}>
-            Inga ankomster hittades för valt datum ({dateLabel}).
+            Inga passagerarfärjeankomster i feeden för {dateLabel}. (Källan har ingen full tidtabell;
+            byt hamn eller prova igår/imorgon.)
           </Text>
         ) : null}
 
@@ -707,9 +769,9 @@ export default function App() {
           ))}
 
         <Text style={styles.note}>
-          Ankommen = faktisk registrerad ankomst i feeden. Estimerad/Försenad = beräknad ETA.
-          Tabellen visar hela kalenderdygnet för valt datum (00:00-23:59) och filtrerar till
-          passagerarfärjor.
+          Data slås ihop från hamnsidan: fartyg i hamn, förväntade ankomster och aktivitetsflödet
+          (endast ARRIVAL), plus anropslistan. Ankommen = registrerad ankomst; estimerad/försenad =
+          ETA. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord.
         </Text>
       </ScrollView>
 
@@ -728,22 +790,31 @@ export default function App() {
                 <Text style={styles.dateModalTodayChipText}>Idag</Text>
               </Pressable>
             </View>
+            <Text style={styles.dateModalHint}>
+              Live-feeden täcker igår–idag–imorgon; andra datum döljs.
+            </Text>
 
             <View style={styles.calMonthNav}>
               <Pressable
-                style={styles.calNavHit}
+                style={[styles.calNavHit, calendarAtMinMonth && styles.calNavHitDisabled]}
                 onPress={() => shiftCalendarMonth(-1)}
+                disabled={calendarAtMinMonth}
                 accessibilityLabel="Föregående månad"
               >
-                <Text style={styles.calNavArrow}>‹</Text>
+                <Text style={[styles.calNavArrow, calendarAtMinMonth && styles.calNavArrowDisabled]}>
+                  ‹
+                </Text>
               </Pressable>
               <Text style={styles.calMonthTitle}>{calendarMonthTitle}</Text>
               <Pressable
-                style={styles.calNavHit}
+                style={[styles.calNavHit, calendarAtMaxMonth && styles.calNavHitDisabled]}
                 onPress={() => shiftCalendarMonth(1)}
+                disabled={calendarAtMaxMonth}
                 accessibilityLabel="Nästa månad"
               >
-                <Text style={styles.calNavArrow}>›</Text>
+                <Text style={[styles.calNavArrow, calendarAtMaxMonth && styles.calNavArrowDisabled]}>
+                  ›
+                </Text>
               </Pressable>
             </View>
 
@@ -762,21 +833,29 @@ export default function App() {
                 const todayTs = startOfDay(new Date()).getTime();
                 const isSelected = cellTs === pendingTs;
                 const isToday = cellTs === todayTs;
+                const canPick = isSelectableCalendarDay(cell.date);
                 return (
                   <Pressable
                     key={`${cellTs}-${index}`}
                     style={[
                       styles.calCell,
                       !cell.inCurrentMonth && styles.calCellOutside,
+                      !canPick && styles.calCellDisabled,
                       isSelected && styles.calCellSelected,
-                      isToday && !isSelected && styles.calCellToday,
+                      isToday && !isSelected && canPick && styles.calCellToday,
                     ]}
-                    onPress={() => setPendingDate(cell.date)}
+                    disabled={!canPick}
+                    onPress={() => {
+                      if (canPick) {
+                        setPendingDate(cell.date);
+                      }
+                    }}
                   >
                     <Text
                       style={[
                         styles.calCellText,
                         !cell.inCurrentMonth && styles.calCellTextOutside,
+                        !canPick && styles.calCellTextDisabled,
                         isSelected && styles.calCellTextSelected,
                       ]}
                     >
@@ -794,7 +873,7 @@ export default function App() {
               <Pressable
                 style={styles.dateModalButtonPrimary}
                 onPress={() => {
-                  setSelectedDate(startOfDay(pendingDate));
+                  setSelectedDate(clampToSelectableDay(pendingDate));
                   setDatePickerOpen(false);
                 }}
               >
@@ -925,6 +1004,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 12,
   },
+  dateModalHint: {
+    color: "#94a3b8",
+    fontSize: 11,
+    lineHeight: 15,
+    marginBottom: 8,
+  },
   calMonthNav: {
     flexDirection: "row",
     alignItems: "center",
@@ -937,11 +1022,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  calNavHitDisabled: {
+    opacity: 0.35,
+  },
   calNavArrow: {
     color: "#e2e8f0",
     fontSize: 22,
     fontWeight: "300",
     lineHeight: 26,
+  },
+  calNavArrowDisabled: {
+    color: "#64748b",
   },
   calMonthTitle: {
     color: "#f8fafc",
@@ -977,6 +1068,9 @@ const styles = StyleSheet.create({
   calCellOutside: {
     opacity: 0.35,
   },
+  calCellDisabled: {
+    opacity: 0.22,
+  },
   calCellSelected: {
     backgroundColor: "#2563eb",
   },
@@ -991,6 +1085,9 @@ const styles = StyleSheet.create({
   },
   calCellTextOutside: {
     color: "#cbd5e1",
+  },
+  calCellTextDisabled: {
+    color: "#475569",
   },
   calCellTextSelected: {
     color: "#ffffff",
