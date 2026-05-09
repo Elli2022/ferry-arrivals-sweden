@@ -1,10 +1,8 @@
-import DateTimePicker from "@react-native-community/datetimepicker";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
-  Platform,
   Pressable,
   RefreshControl,
   SafeAreaView,
@@ -65,6 +63,8 @@ const PORTS: Record<PortId, PortConfig> = {
 
 const AUTO_REFRESH_MS = 30_000;
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
+
+const WEEKDAY_LABELS_SV = ["mån", "tis", "ons", "tors", "fre", "lör", "sön"] as const;
 
 const PASSENGER_FERRY_KEYWORDS: Record<PortId, string[]> = {
   trelleborg: [
@@ -165,6 +165,22 @@ const startOfDay = (date: Date) => {
   const value = new Date(date);
   value.setHours(0, 0, 0, 0);
   return value;
+};
+
+const buildMonthGridCells = (viewMonthStart: Date) => {
+  const year = viewMonthStart.getFullYear();
+  const month = viewMonthStart.getMonth();
+  const first = new Date(year, month, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const cells: { date: Date; inCurrentMonth: boolean }[] = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(year, month, 1 - offset + i);
+    cells.push({
+      date: startOfDay(d),
+      inCurrentMonth: d.getMonth() === month,
+    });
+  }
+  return cells;
 };
 
 const calendarDayDiff = (a: Date, b: Date) => {
@@ -406,7 +422,10 @@ export default function App() {
   const [selectedPort, setSelectedPort] = useState<PortId>("trelleborg");
   const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()));
   const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const [iosPickerDraft, setIosPickerDraft] = useState<Date>(() => startOfDay(new Date()));
+  const [pendingDate, setPendingDate] = useState<Date>(() => startOfDay(new Date()));
+  const [calendarViewMonth, setCalendarViewMonth] = useState(
+    () => new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+  );
   const [arrivals, setArrivals] = useState<FerryArrival[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -515,8 +534,32 @@ export default function App() {
   );
 
   const openDatePicker = () => {
-    setIosPickerDraft(selectedDate);
+    setPendingDate(selectedDate);
+    setCalendarViewMonth(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
     setDatePickerOpen(true);
+  };
+
+  const calendarCells = useMemo(
+    () => buildMonthGridCells(calendarViewMonth),
+    [calendarViewMonth]
+  );
+
+  const calendarMonthTitle = useMemo(() => {
+    const raw = new Intl.DateTimeFormat("sv-SE", {
+      month: "long",
+      year: "numeric",
+    }).format(calendarViewMonth);
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }, [calendarViewMonth]);
+
+  const shiftCalendarMonth = (delta: number) => {
+    setCalendarViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+  };
+
+  const jumpPendingToToday = () => {
+    const t = startOfDay(new Date());
+    setPendingDate(t);
+    setCalendarViewMonth(new Date(t.getFullYear(), t.getMonth(), 1));
   };
 
   const arrivedArrivals = arrivals.filter((arrival) => arrival.status === "arrived");
@@ -670,22 +713,8 @@ export default function App() {
         </Text>
       </ScrollView>
 
-      {datePickerOpen && Platform.OS === "android" ? (
-        <DateTimePicker
-          value={selectedDate}
-          mode="date"
-          display="default"
-          onChange={(event, date) => {
-            setDatePickerOpen(false);
-            if (event.type === "set" && date) {
-              setSelectedDate(startOfDay(date));
-            }
-          }}
-        />
-      ) : null}
-
       <Modal
-        visible={datePickerOpen && (Platform.OS === "ios" || Platform.OS === "web")}
+        visible={datePickerOpen}
         transparent
         animationType="slide"
         onRequestClose={() => setDatePickerOpen(false)}
@@ -693,17 +722,71 @@ export default function App() {
         <View style={styles.dateModalRoot}>
           <Pressable style={styles.dateModalBackdrop} onPress={() => setDatePickerOpen(false)} />
           <View style={styles.dateModalCard}>
-            <Text style={styles.dateModalTitle}>Välj datum</Text>
-            <DateTimePicker
-              value={iosPickerDraft}
-              mode="date"
-              display={Platform.OS === "web" ? "inline" : "spinner"}
-              onChange={(_, date) => {
-                if (date) {
-                  setIosPickerDraft(startOfDay(date));
-                }
-              }}
-            />
+            <View style={styles.dateModalHeaderRow}>
+              <Text style={styles.dateModalTitle}>Välj datum</Text>
+              <Pressable style={styles.dateModalTodayChip} onPress={jumpPendingToToday}>
+                <Text style={styles.dateModalTodayChipText}>Idag</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.calMonthNav}>
+              <Pressable
+                style={styles.calNavHit}
+                onPress={() => shiftCalendarMonth(-1)}
+                accessibilityLabel="Föregående månad"
+              >
+                <Text style={styles.calNavArrow}>‹</Text>
+              </Pressable>
+              <Text style={styles.calMonthTitle}>{calendarMonthTitle}</Text>
+              <Pressable
+                style={styles.calNavHit}
+                onPress={() => shiftCalendarMonth(1)}
+                accessibilityLabel="Nästa månad"
+              >
+                <Text style={styles.calNavArrow}>›</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.calWeekHeader}>
+              {WEEKDAY_LABELS_SV.map((label) => (
+                <Text key={label} style={styles.calWeekday}>
+                  {label}
+                </Text>
+              ))}
+            </View>
+
+            <View style={styles.calGrid}>
+              {calendarCells.map((cell, index) => {
+                const pendingTs = pendingDate.getTime();
+                const cellTs = cell.date.getTime();
+                const todayTs = startOfDay(new Date()).getTime();
+                const isSelected = cellTs === pendingTs;
+                const isToday = cellTs === todayTs;
+                return (
+                  <Pressable
+                    key={`${cellTs}-${index}`}
+                    style={[
+                      styles.calCell,
+                      !cell.inCurrentMonth && styles.calCellOutside,
+                      isSelected && styles.calCellSelected,
+                      isToday && !isSelected && styles.calCellToday,
+                    ]}
+                    onPress={() => setPendingDate(cell.date)}
+                  >
+                    <Text
+                      style={[
+                        styles.calCellText,
+                        !cell.inCurrentMonth && styles.calCellTextOutside,
+                        isSelected && styles.calCellTextSelected,
+                      ]}
+                    >
+                      {cell.date.getDate()}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
             <View style={styles.dateModalActions}>
               <Pressable style={styles.dateModalButtonGhost} onPress={() => setDatePickerOpen(false)}>
                 <Text style={styles.dateModalButtonGhostText}>Avbryt</Text>
@@ -711,7 +794,7 @@ export default function App() {
               <Pressable
                 style={styles.dateModalButtonPrimary}
                 onPress={() => {
-                  setSelectedDate(startOfDay(iosPickerDraft));
+                  setSelectedDate(startOfDay(pendingDate));
                   setDatePickerOpen(false);
                 }}
               >
@@ -813,11 +896,99 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: "#1e293b",
   },
+  dateModalHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
   dateModalTitle: {
     color: "#f8fafc",
     fontSize: 16,
     fontWeight: "700",
-    marginBottom: 8,
+  },
+  dateModalTodayChip: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#1e293b",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  dateModalTodayChipText: {
+    color: "#bfdbfe",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  calMonthNav: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  calNavHit: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  calNavArrow: {
+    color: "#e2e8f0",
+    fontSize: 28,
+    fontWeight: "300",
+    lineHeight: 32,
+  },
+  calMonthTitle: {
+    color: "#f8fafc",
+    fontSize: 17,
+    fontWeight: "700",
+    textTransform: "capitalize",
+  },
+  calWeekHeader: {
+    flexDirection: "row",
+    marginBottom: 6,
+  },
+  calWeekday: {
+    flex: 1,
+    textAlign: "center",
+    color: "#94a3b8",
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "lowercase",
+  },
+  calGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 4,
+  },
+  calCell: {
+    width: "14.28%",
+    aspectRatio: 1,
+    maxWidth: "14.28%",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+  },
+  calCellOutside: {
+    opacity: 0.35,
+  },
+  calCellSelected: {
+    backgroundColor: "#2563eb",
+  },
+  calCellToday: {
+    borderWidth: 2,
+    borderColor: "#f87171",
+  },
+  calCellText: {
+    color: "#f8fafc",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  calCellTextOutside: {
+    color: "#cbd5e1",
+  },
+  calCellTextSelected: {
+    color: "#ffffff",
   },
   dateModalActions: {
     flexDirection: "row",
