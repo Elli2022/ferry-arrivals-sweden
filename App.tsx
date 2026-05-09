@@ -412,46 +412,6 @@ const parsePortCallsArrivals = (
   return arrivals;
 };
 
-const generateHelsingborgUpcoming = (targetDate: Date): FerryArrival[] => {
-  const now = new Date();
-  const selectedDayStart = startOfDay(targetDate);
-  const todayStart = startOfDay(now);
-
-  if (selectedDayStart < todayStart) {
-    return [];
-  }
-
-  const first = isSameCalendarDay(targetDate, now) ? new Date(now) : new Date(targetDate);
-  first.setSeconds(0, 0);
-  const minuteRemainder = first.getMinutes() % 20;
-  if (minuteRemainder !== 0) {
-    first.setMinutes(first.getMinutes() + (20 - minuteRemainder));
-  }
-  if (isSameCalendarDay(targetDate, now) && minuteRemainder === 0) {
-    first.setMinutes(first.getMinutes() + 20);
-  }
-
-  const endOfDay = new Date(targetDate);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const generated: FerryArrival[] = [];
-  let cursor = first;
-  while (cursor <= endOfDay) {
-    if (isSameCalendarDay(cursor, targetDate)) {
-      generated.push({
-        id: `helsingborg-oresund-est-${cursor.toISOString()}`,
-        vesselName: "Öresundslinjen (ungefärlig)",
-        plannedTime: new Date(cursor),
-        status: "scheduled",
-        source:
-          "Ungefärligt 20-minutersmönster (ej boknings- eller rederitid; jämför ForSea/Öresundslinjen för exakta tider och fartyg).",
-      });
-    }
-    cursor = new Date(cursor.getTime() + 20 * 60 * 1000);
-  }
-  return generated;
-};
-
 const formatTime = (date: Date) =>
   new Intl.DateTimeFormat("sv-SE", {
     hour: "2-digit",
@@ -523,9 +483,6 @@ export default function App() {
         const parsedFromMainPage = parseArrivalsFromMarkdown(markdown, selectedPort, targetDate);
 
         const combined = [...parsedFromPortCalls, ...parsedFromMainPage];
-        if (selectedPort === "helsingborg") {
-          combined.push(...generateHelsingborgUpcoming(targetDate));
-        }
         const unique = new Map<string, FerryArrival>();
         for (const arrival of combined) {
           const key = `${arrival.vesselName}-${arrival.plannedTime.toISOString()}-${arrival.status}`;
@@ -806,8 +763,9 @@ export default function App() {
 
         <Text style={styles.note}>
           Data slås ihop från hamnsidan: fartyg i hamn, förväntade ankomster och aktivitetsflödet
-          (endast ARRIVAL), plus anropslistan. Ankommen = registrerad ankomst; estimerad/försenad =
-          ETA. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord.
+          (endast ARRIVAL till hamnen — ingen avgång från Helsingör), plus anropslistan med
+          ankomsttid i Helsingborg. Ankommen = registrerad ankomst; estimerad/försenad = ETA i
+          källan. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord.
         </Text>
       </ScrollView>
 
