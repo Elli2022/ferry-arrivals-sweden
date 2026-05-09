@@ -1,5 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -469,6 +469,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [trafficInfo, setTrafficInfo] = useState<TrafficInfo | null>(null);
+  const fetchGenerationRef = useRef(0);
 
   const selectedPortConfig = PORTS[selectedPort];
 
@@ -484,19 +485,16 @@ export default function App() {
         setIsLoading(true);
       }
 
+      const generation = ++fetchGenerationRef.current;
+
       try {
         setError(null);
         const arrivalsPromise = fetch(selectedPortConfig.sourceUrl);
         const portCallsPromise = fetch(selectedPortConfig.arrivalsUrl);
-        const trafficPromise =
-          selectedPort === "helsingborg" && selectedPortConfig.trafficUrl
-            ? fetch(selectedPortConfig.trafficUrl)
-            : Promise.resolve(null);
 
-        const [arrivalsResponse, portCallsResponse, trafficResponse] = await Promise.all([
+        const [arrivalsResponse, portCallsResponse] = await Promise.all([
           arrivalsPromise,
           portCallsPromise,
-          trafficPromise,
         ]);
 
         if (!arrivalsResponse.ok || !portCallsResponse.ok) {
@@ -504,6 +502,9 @@ export default function App() {
         }
         const markdown = await arrivalsResponse.text();
         const portCallsMarkdown = await portCallsResponse.text();
+        if (fetchGenerationRef.current !== generation) {
+          return;
+        }
         const targetDate = selectedDate;
         const parsedFromPortCalls = parsePortCallsArrivals(
           portCallsMarkdown,
@@ -529,14 +530,34 @@ export default function App() {
           )
         );
 
-        if (trafficResponse?.ok) {
-          const trafficText = await trafficResponse.text();
-          setTrafficInfo(extractOresundTrafficInfo(trafficText));
+        setLastUpdated(new Date());
+
+        if (selectedPort === "helsingborg" && selectedPortConfig.trafficUrl) {
+          const trafficUrl = selectedPortConfig.trafficUrl;
+          void (async () => {
+            try {
+              const trafficResponse = await fetch(trafficUrl);
+              if (fetchGenerationRef.current !== generation) {
+                return;
+              }
+              if (trafficResponse.ok) {
+                const trafficText = await trafficResponse.text();
+                if (fetchGenerationRef.current !== generation) {
+                  return;
+                }
+                setTrafficInfo(extractOresundTrafficInfo(trafficText));
+              } else {
+                setTrafficInfo(null);
+              }
+            } catch {
+              if (fetchGenerationRef.current === generation) {
+                setTrafficInfo(null);
+              }
+            }
+          })();
         } else {
           setTrafficInfo(null);
         }
-
-        setLastUpdated(new Date());
       } catch (_err) {
         setError("Kunde inte hämta live-data just nu. Försök igen.");
       } finally {
@@ -544,7 +565,13 @@ export default function App() {
         setIsRefreshing(false);
       }
     },
-    [selectedDate, selectedPort, selectedPortConfig.arrivalsUrl, selectedPortConfig.sourceUrl]
+    [
+      selectedDate,
+      selectedPort,
+      selectedPortConfig.arrivalsUrl,
+      selectedPortConfig.sourceUrl,
+      selectedPortConfig.trafficUrl,
+    ]
   );
 
   useEffect(() => {
