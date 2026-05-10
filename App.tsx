@@ -62,6 +62,10 @@ const PORTS: Record<PortId, PortConfig> = {
 };
 
 const AUTO_REFRESH_MS = 30_000;
+/** jina/MyShipTracking kan första gången svara med tomt eller ofullständigt utdrag — omförsök innan tom vy. */
+const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 5_500;
+const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 9;
+const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 3;
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
 const WEEKDAY_LABELS_SV = ["mån", "tis", "ons", "tors", "fre", "lör", "sön"] as const;
@@ -462,44 +466,60 @@ export default function App() {
 
       try {
         setError(null);
-        const arrivalsPromise = fetch(selectedPortConfig.sourceUrl);
-        const portCallsPromise = fetch(selectedPortConfig.arrivalsUrl);
+        const maxAttempts = refreshMode
+          ? ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH
+          : ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL;
 
-        const [arrivalsResponse, portCallsResponse] = await Promise.all([
-          arrivalsPromise,
-          portCallsPromise,
-        ]);
+        let finalList: FerryArrival[] = [];
 
-        if (!arrivalsResponse.ok || !portCallsResponse.ok) {
-          throw new Error("Kunde inte läsa data från källan");
-        }
-        const markdown = await arrivalsResponse.text();
-        const portCallsMarkdown = await portCallsResponse.text();
-        if (fetchGenerationRef.current !== generation) {
-          return;
-        }
-        const targetDate = selectedDate;
-        const parsedFromPortCalls = parsePortCallsArrivals(
-          portCallsMarkdown,
-          selectedPort,
-          targetDate
-        );
-        const parsedFromMainPage = parseArrivalsFromMarkdown(markdown, selectedPort, targetDate);
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          if (attempt > 0) {
+            await new Promise((resolve) => setTimeout(resolve, ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS));
+            if (fetchGenerationRef.current !== generation) {
+              return;
+            }
+          }
 
-        const combined = [...parsedFromPortCalls, ...parsedFromMainPage];
-        const unique = new Map<string, FerryArrival>();
-        for (const arrival of combined) {
-          const key = `${arrival.vesselName}-${arrival.plannedTime.toISOString()}-${arrival.status}`;
-          if (!unique.has(key)) {
-            unique.set(key, arrival);
+          const [arrivalsResponse, portCallsResponse] = await Promise.all([
+            fetch(selectedPortConfig.sourceUrl),
+            fetch(selectedPortConfig.arrivalsUrl),
+          ]);
+
+          if (!arrivalsResponse.ok || !portCallsResponse.ok) {
+            throw new Error("Kunde inte läsa data från källan");
+          }
+          const markdown = await arrivalsResponse.text();
+          const portCallsMarkdown = await portCallsResponse.text();
+          if (fetchGenerationRef.current !== generation) {
+            return;
+          }
+
+          const targetDate = selectedDate;
+          const parsedFromPortCalls = parsePortCallsArrivals(
+            portCallsMarkdown,
+            selectedPort,
+            targetDate
+          );
+          const parsedFromMainPage = parseArrivalsFromMarkdown(markdown, selectedPort, targetDate);
+
+          const combined = [...parsedFromPortCalls, ...parsedFromMainPage];
+          const unique = new Map<string, FerryArrival>();
+          for (const arrival of combined) {
+            const key = `${arrival.vesselName}-${arrival.plannedTime.toISOString()}-${arrival.status}`;
+            if (!unique.has(key)) {
+              unique.set(key, arrival);
+            }
+          }
+          finalList = Array.from(unique.values()).sort(
+            (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
+          );
+
+          if (finalList.length > 0) {
+            break;
           }
         }
-        setArrivals(
-          Array.from(unique.values()).sort(
-            (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
-          )
-        );
 
+        setArrivals(finalList);
         setLastUpdated(new Date());
 
         if (selectedPort === "helsingborg" && selectedPortConfig.trafficUrl) {
@@ -698,6 +718,10 @@ export default function App() {
           <View style={styles.centered}>
             <ActivityIndicator size="large" color="#2563eb" />
             <Text style={styles.helperText}>Hämtar senaste data...</Text>
+            <Text style={styles.loadingSubhint}>
+              Proxyn/hamnsidan kan svara segt — vid första tomma svaret väntar vi och försöker igen
+              innan vi visar &quot;inga ankomster&quot;.
+            </Text>
           </View>
         ) : null}
 
@@ -1206,6 +1230,15 @@ const styles = StyleSheet.create({
   helperText: {
     color: "#cbd5e1",
     fontSize: 14,
+  },
+  loadingSubhint: {
+    marginTop: 8,
+    color: "#94a3b8",
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: "center",
+    paddingHorizontal: 12,
+    maxWidth: 340,
   },
   error: {
     color: "#fecaca",
