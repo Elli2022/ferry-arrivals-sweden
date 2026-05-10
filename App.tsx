@@ -70,15 +70,15 @@ const PORTS: Record<PortId, PortConfig> = {
     sourceUrl:
       "https://r.jina.ai/http://www.myshiptracking.com/ports/port-of-ystad-in-se-sweden-id-2225",
     arrivalsUrl:
-      "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
+      "https://r.jina.ai/http://www.myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
     estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=2225",
   },
   trelleborg: {
     name: "Trelleborg",
     sourceUrl:
-      "https://r.jina.ai/http://myshiptracking.com/ports/port-of-trelleborg-in-se-sweden-id-427",
+      "https://r.jina.ai/http://www.myshiptracking.com/ports/port-of-trelleborg-in-se-sweden-id-427",
     arrivalsUrl:
-      "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
+      "https://r.jina.ai/http://www.myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
     estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=427",
   },
   helsingborg: {
@@ -86,7 +86,7 @@ const PORTS: Record<PortId, PortConfig> = {
     sourceUrl:
       "https://r.jina.ai/http://www.myshiptracking.com/ports/port-of-helsingborg-in-se-sweden-id-209",
     arrivalsUrl:
-      "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=209&type=1",
+      "https://r.jina.ai/http://www.myshiptracking.com/ports-arrivals-departures/?pid=209&type=1",
     estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=209",
     trafficUrl: "https://r.jina.ai/http://www.oresundslinjen.se/trafikinformation",
   },
@@ -94,9 +94,19 @@ const PORTS: Record<PortId, PortConfig> = {
 
 const AUTO_REFRESH_MS = 30_000;
 /** jina/MyShipTracking kan första gången svara med tomt eller ofullständigt utdrag — omförsök innan tom vy. */
-const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 3_500;
-const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 5;
+const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 2_500;
+const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 3;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
+
+const fetchTextSafe = async (url: string): Promise<{ ok: boolean; text: string }> => {
+  try {
+    const response = await fetch(url);
+    const text = await response.text();
+    return { ok: response.ok, text };
+  } catch {
+    return { ok: false, text: "" };
+  }
+};
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
 /** Direkta sidor på MyShipTracking (appen hämtar markdown via r.jina.ai/http://… som mellanled). */
@@ -104,17 +114,17 @@ const PUBLIC_MST_PAGES: Record<PortId, { hamn: string; estimate: string; anrop: 
   trelleborg: {
     hamn: "https://www.myshiptracking.com/ports/port-of-trelleborg-in-se-sweden-id-427",
     estimate: "https://www.myshiptracking.com/estimate?pid=427",
-    anrop: "https://myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
+    anrop: "https://www.myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
   },
   helsingborg: {
     hamn: "https://www.myshiptracking.com/ports/port-of-helsingborg-in-se-sweden-id-209",
     estimate: "https://www.myshiptracking.com/estimate?pid=209",
-    anrop: "https://myshiptracking.com/ports-arrivals-departures/?pid=209&type=1",
+    anrop: "https://www.myshiptracking.com/ports-arrivals-departures/?pid=209&type=1",
   },
   ystad: {
     hamn: "https://www.myshiptracking.com/ports/port-of-ystad-in-se-sweden-id-2225",
     estimate: "https://www.myshiptracking.com/estimate?pid=2225",
-    anrop: "https://myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
+    anrop: "https://www.myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
   },
 };
 
@@ -690,25 +700,18 @@ export default function App() {
           }
 
           const estUrl = selectedPortConfig.estimateUrl;
-          const fetchResponses = await Promise.all([
-            fetch(selectedPortConfig.sourceUrl),
-            fetch(selectedPortConfig.arrivalsUrl),
-            ...(estUrl ? [fetch(estUrl)] : []),
+          const [srcPack, callsPack, estPack] = await Promise.all([
+            fetchTextSafe(selectedPortConfig.sourceUrl),
+            fetchTextSafe(selectedPortConfig.arrivalsUrl),
+            estUrl ? fetchTextSafe(estUrl) : Promise.resolve({ ok: true, text: "" }),
           ]);
 
-          const arrivalsResponse = fetchResponses[0];
-          const portCallsResponse = fetchResponses[1];
-          const estimateResponse = estUrl ? fetchResponses[2] : undefined;
-
-          if (!arrivalsResponse.ok || !portCallsResponse.ok) {
+          if (!srcPack.ok || !callsPack.ok) {
             throw new Error("Kunde inte läsa data från källan");
           }
-          const markdown = await arrivalsResponse.text();
-          const portCallsMarkdown = await portCallsResponse.text();
-          let estimateMarkdown = "";
-          if (estimateResponse?.ok) {
-            estimateMarkdown = await estimateResponse.text();
-          }
+          const markdown = srcPack.text;
+          const portCallsMarkdown = callsPack.text;
+          const estimateMarkdown = estPack.ok ? estPack.text : "";
           if (fetchGenerationRef.current !== generation) {
             return;
           }
