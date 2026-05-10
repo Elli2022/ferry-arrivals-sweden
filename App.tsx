@@ -66,6 +66,16 @@ const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
 const WEEKDAY_LABELS_SV = ["mån", "tis", "ons", "tors", "fre", "lör", "sön"] as const;
 
+/** Endast ForSea/Öresundslinjens färjor i Helsingborg — inga andra fartyg i hamnen. */
+const ORESUND_FERRY_NAME_FRAGMENTS = [
+  "tycho brahe",
+  "aurora af helsingborg",
+  "aurora af helsingbor",
+  "hamlet",
+  "mercuria",
+  "uraniborg",
+] as const;
+
 const PASSENGER_FERRY_KEYWORDS: Record<PortId, string[]> = {
   trelleborg: [
     "peter pan",
@@ -83,13 +93,7 @@ const PASSENGER_FERRY_KEYWORDS: Record<PortId, string[]> = {
     "jantar unity",
     "copernicus",
   ],
-  helsingborg: [
-    "tycho brahe",
-    "aurora",
-    "hamlet",
-    "mercuria",
-    "uraniborg",
-  ],
+  helsingborg: [...ORESUND_FERRY_NAME_FRAGMENTS],
   ystad: [
     "polonia",
     "varsovia",
@@ -123,7 +127,7 @@ const extractVesselName = (text: string): string => {
 };
 
 const isPassengerFerry = (portId: PortId, vesselName: string): boolean => {
-  const normalized = vesselName.toLowerCase();
+  const normalized = vesselName.toLowerCase().replace(/\s+/g, " ");
   return PASSENGER_FERRY_KEYWORDS[portId].some((keyword) => normalized.includes(keyword));
 };
 
@@ -672,8 +676,9 @@ export default function App() {
         ) : null}
         <View style={styles.freeRealtimeBanner}>
           <Text style={styles.freeRealtimeText}>
-            Gratis live-läge från MyShipTracking (rullande lista). Datumväljaren matchar feeden:
-            igår, idag eller imorgon — passagerarfärjor enligt nyckelord.
+            {selectedPort === "helsingborg"
+              ? "Helsingborg: endast Öresundslinjens färjor (ForSea), med båtnamn från MyShipTracking. Listan är en kort rullande utdrag — inte hela dygnet / inte alla framtida ETA förrän de dyker upp i feeden (jämför med rederiets tidtabell)."
+              : "Gratis live-läge från MyShipTracking (rullande lista). Datumväljaren: igår, idag eller imorgon — passagerarfärjor enligt nyckelord."}
           </Text>
         </View>
         {selectedPort === "helsingborg" && trafficInfo ? (
@@ -700,8 +705,9 @@ export default function App() {
 
         {!isLoading && !error && arrivals.length === 0 ? (
           <Text style={styles.helperText}>
-            Inga passagerarfärjeankomster i feeden för {dateLabel}. (Källan har ingen full tidtabell;
-            byt hamn eller prova igår/imorgon.)
+            {selectedPort === "helsingborg"
+              ? `Inga Öresundsfärjor i utdraget för ${dateLabel}. Sajten skickar bara de senaste raderna — på kvällen kan morgondagens turer saknas tills de läggs in i feeden. Prova uppdatera senare eller se Öresundslinjens tidtabell.`
+              : `Inga passagerarfärjeankomster i feeden för ${dateLabel}. (Källan har ingen full tidtabell; byt hamn eller prova igår/imorgon.)`}
           </Text>
         ) : null}
 
@@ -729,7 +735,9 @@ export default function App() {
                 </View>
               </View>
               <Text style={styles.vessel}>{arrival.vesselName}</Text>
-              <Text style={styles.source}>{arrival.source}</Text>
+              {selectedPort !== "helsingborg" ? (
+                <Text style={styles.source}>{arrival.source}</Text>
+              ) : null}
             </View>
           ))}
 
@@ -757,15 +765,16 @@ export default function App() {
                 </View>
               </View>
               <Text style={styles.vessel}>{arrival.vesselName}</Text>
-              <Text style={styles.source}>{arrival.source}</Text>
+              {selectedPort !== "helsingborg" ? (
+                <Text style={styles.source}>{arrival.source}</Text>
+              ) : null}
             </View>
           ))}
 
         <Text style={styles.note}>
-          Data slås ihop från hamnsidan: fartyg i hamn, förväntade ankomster och aktivitetsflödet
-          (endast ARRIVAL till hamnen — ingen avgång från Helsingör), plus anropslistan med
-          ankomsttid i Helsingborg. Ankommen = registrerad ankomst; estimerad/försenad = ETA i
-          källan. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord.
+          {selectedPort === "helsingborg"
+            ? "Endast Öresundslinjens färjor (Tycho Brahe, Aurora af Helsingborg, Hamlet, Mercuria, Uraniborg). Visade ankomster/ETA kommer från MyShipTrackings korta feed — samma skäl kan göra att inte alla turer för dygnet syns på en gång."
+            : "Data slås ihop från hamnsidan: fartyg i hamn, förväntade ankomster och aktivitetsflödet (endast ARRIVAL till hamnen), plus anropslistan. Ankommen = registrerad ankomst; estimerad/försenad = ETA i källan. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord."}
         </Text>
       </ScrollView>
 
