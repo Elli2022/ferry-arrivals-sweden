@@ -52,6 +52,8 @@ type PortConfig = {
   name: string;
   sourceUrl: string;
   arrivalsUrl: string;
+  /** Full ETA-tabell (saknas ofta i hamnsidans utdrag). */
+  estimateUrl?: string;
   trafficUrl?: string;
 };
 
@@ -68,6 +70,7 @@ const PORTS: Record<PortId, PortConfig> = {
       "https://r.jina.ai/http://www.myshiptracking.com/ports/port-of-ystad-in-se-sweden-id-2225",
     arrivalsUrl:
       "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
+    estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=2225",
   },
   trelleborg: {
     name: "Trelleborg",
@@ -75,6 +78,7 @@ const PORTS: Record<PortId, PortConfig> = {
       "https://r.jina.ai/http://myshiptracking.com/ports/port-of-trelleborg-in-se-sweden-id-427",
     arrivalsUrl:
       "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
+    estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=427",
   },
   helsingborg: {
     name: "Helsingborg",
@@ -82,6 +86,7 @@ const PORTS: Record<PortId, PortConfig> = {
       "https://r.jina.ai/http://www.myshiptracking.com/ports/port-of-helsingborg-in-se-sweden-id-209",
     arrivalsUrl:
       "https://r.jina.ai/http://myshiptracking.com/ports-arrivals-departures/?pid=209&type=1",
+    estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=209",
     trafficUrl: "https://r.jina.ai/http://www.oresundslinjen.se/trafikinformation",
   },
 };
@@ -134,14 +139,19 @@ const PASSENGER_FERRY_KEYWORDS: Record<PortId, string[]> = {
   ],
 };
 
+/** Alltid lokal kalendertid (Europe/Stockholm på enheten) — undviker ISO-/UTC-fällor i RN/Web. */
 const parseDate = (text: string): Date | null => {
   const normalized = text.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
-  const match = normalized.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/);
+  const match = normalized.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
   if (!match) {
     return null;
   }
-
-  const parsed = new Date(`${match[1]}T${match[2]}:00`);
+  const y = Number(match[1]);
+  const mo = Number(match[2]);
+  const d = Number(match[3]);
+  const hh = Number(match[4]);
+  const mm = Number(match[5]);
+  const parsed = new Date(y, mo - 1, d, hh, mm, 0, 0);
   return Number.isNaN(parsed.valueOf()) ? null : parsed;
 };
 
@@ -449,6 +459,148 @@ const parsePortCallsArrivals = (
   return arrivals;
 };
 
+/** ETA-sidan `estimate?pid=` har ofta fler rader än hamnsidans korta Expected-tabell (viktigt för Öresund). */
+const parseEstimatePageMarkdown = (
+  markdown: string,
+  portId: PortId,
+  targetDate: Date
+): FerryArrival[] => {
+  const rows = markdown.split("\n");
+  const arrivals: FerryArrival[] = [];
+  let inTable = false;
+
+  for (const row of rows) {
+    if (row.includes("| MMSI |") && row.includes("Estimated Arrival")) {
+      inTable = true;
+      continue;
+    }
+    if (inTable && /^\|\s*-/.test(row)) {
+      continue;
+    }
+    if (inTable && /Showing\s+\d+\s*-\s*\d+\s+of\s+\d+\s+Results/i.test(row)) {
+      break;
+    }
+    if (inTable && row.startsWith("#")) {
+      break;
+    }
+    if (!inTable || !row.includes("|")) {
+      continue;
+    }
+
+    const cells = row.split("|").map((c) => c.trim()).filter(Boolean);
+    if (cells.length < 3) {
+      continue;
+    }
+    if (cells[0] === "MMSI" || !/^\d/.test(cells[0])) {
+      continue;
+    }
+
+    const timeCell = cells[cells.length - 1];
+    const plannedTime = parseDate(timeCell);
+    if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
+      continue;
+    }
+    const vesselName = extractVesselName(cells[1]);
+    if (!vesselName || !isPassengerFerry(portId, vesselName)) {
+      continue;
+    }
+
+    arrivals.push({
+      id: `${portId}-estimate-${vesselName}-${plannedTime.toISOString()}`,
+      vesselName,
+      plannedTime,
+      status: getStatusFromEta(plannedTime),
+      source: "MyShipTracking estimate (full ETA-lista)",
+      feedKind: "expected",
+    });
+  }
+
+  return arrivals;
+};
+
+const ORESUND_SHUTTLE_NAMES = ["Tycho Brahe", "Aurora af Helsingborg"] as const;
+
+/**
+ * Om varken hamnsida eller estimate ger framtida Öresund-ETA (pendeln syns sällan i trunkerade tabeller),
+ * fyll på med ~20-minutersankomster till Helsingborg tills dygnsslut — tydligt märkta som ungefärliga.
+ */
+const supplementHelsingborgOresundIfNoUpcoming = (
+  arrivals: FerryArrival[],
+  targetDate: Date
+): FerryArrival[] => {
+  const now = new Date();
+  const dayStart = startOfDay(targetDate);
+  if (dayStart.getTime() < startOfDay(now).getTime()) {
+    return [];
+  }
+
+  const hasScheduledPassenger = arrivals.some(
+    (a) =>
+      a.status === "scheduled" &&
+      isPassengerFerry("helsingborg", a.vesselName)
+  );
+  if (hasScheduledPassenger) {
+    return [];
+  }
+
+  const endOfDay = new Date(targetDate);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const oresundSameDay = arrivals
+    .filter(
+      (a) =>
+        isPassengerFerry("helsingborg", a.vesselName) &&
+        isSameCalendarDay(a.plannedTime, targetDate)
+    )
+    .sort((a, b) => b.plannedTime.getTime() - a.plannedTime.getTime());
+
+  let cursor: Date;
+  if (isSameCalendarDay(targetDate, now)) {
+    cursor = new Date(now);
+    cursor.setSeconds(0, 0);
+    const rem = cursor.getMinutes() % 20;
+    cursor.setMinutes(rem === 0 ? cursor.getMinutes() + 20 : cursor.getMinutes() + (20 - rem));
+    if (oresundSameDay.length > 0) {
+      const afterLast = new Date(oresundSameDay[0].plannedTime.getTime() + 20 * 60 * 1000);
+      if (afterLast > cursor) {
+        cursor = afterLast;
+      }
+    }
+  } else {
+    cursor = startOfDay(targetDate);
+    const rem = cursor.getMinutes() % 20;
+    if (rem !== 0) {
+      cursor.setMinutes(cursor.getMinutes() + (20 - rem));
+    }
+  }
+
+  let nameFlip = 0;
+  if (oresundSameDay.length > 0) {
+    const last = oresundSameDay[0].vesselName.toLowerCase();
+    nameFlip = last.includes("aurora") ? 0 : 1;
+  }
+
+  const extra: FerryArrival[] = [];
+  while (cursor <= endOfDay && extra.length < 100) {
+    if (!isSameCalendarDay(cursor, targetDate)) {
+      break;
+    }
+    const vesselName = ORESUND_SHUTTLE_NAMES[(nameFlip + extra.length) % 2];
+    extra.push({
+      id: `helsingborg-supplement-${cursor.toISOString()}-${vesselName}`,
+      vesselName,
+      plannedTime: new Date(cursor),
+      status: "scheduled",
+      source:
+        "Ungefärlig pendelfärjeankomst (~20 min). Visas bara när ingen framtida ETA finns i MyShipTrackings listor.",
+      feedKind: "expected",
+    });
+    cursor = new Date(cursor.getTime() + 20 * 60 * 1000);
+  }
+
+  return extra;
+};
+
 const formatTime = (date: Date) =>
   new Intl.DateTimeFormat("sv-SE", {
     hour: "2-digit",
@@ -514,16 +666,26 @@ export default function App() {
             }
           }
 
-          const [arrivalsResponse, portCallsResponse] = await Promise.all([
+          const estUrl = selectedPortConfig.estimateUrl;
+          const fetchResponses = await Promise.all([
             fetch(selectedPortConfig.sourceUrl),
             fetch(selectedPortConfig.arrivalsUrl),
+            ...(estUrl ? [fetch(estUrl)] : []),
           ]);
+
+          const arrivalsResponse = fetchResponses[0];
+          const portCallsResponse = fetchResponses[1];
+          const estimateResponse = estUrl ? fetchResponses[2] : undefined;
 
           if (!arrivalsResponse.ok || !portCallsResponse.ok) {
             throw new Error("Kunde inte läsa data från källan");
           }
           const markdown = await arrivalsResponse.text();
           const portCallsMarkdown = await portCallsResponse.text();
+          let estimateMarkdown = "";
+          if (estimateResponse?.ok) {
+            estimateMarkdown = await estimateResponse.text();
+          }
           if (fetchGenerationRef.current !== generation) {
             return;
           }
@@ -535,8 +697,11 @@ export default function App() {
             targetDate
           );
           const parsedFromMainPage = parseArrivalsFromMarkdown(markdown, selectedPort, targetDate);
+          const parsedFromEstimate = estimateMarkdown
+            ? parseEstimatePageMarkdown(estimateMarkdown, selectedPort, targetDate)
+            : [];
 
-          const combined = [...parsedFromPortCalls, ...parsedFromMainPage];
+          const combined = [...parsedFromPortCalls, ...parsedFromMainPage, ...parsedFromEstimate];
           const unique = new Map<string, FerryArrival>();
           for (const arrival of combined) {
             const key = `${arrival.vesselName}-${arrival.plannedTime.toISOString()}-${arrival.status}`;
@@ -544,9 +709,24 @@ export default function App() {
               unique.set(key, arrival);
             }
           }
-          finalList = Array.from(unique.values()).sort(
+
+          let merged = Array.from(unique.values()).sort(
             (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
           );
+
+          if (selectedPort === "helsingborg") {
+            for (const row of supplementHelsingborgOresundIfNoUpcoming(merged, targetDate)) {
+              const key = `${row.vesselName}-${row.plannedTime.toISOString()}-${row.status}`;
+              if (!unique.has(key)) {
+                unique.set(key, row);
+              }
+            }
+            merged = Array.from(unique.values()).sort(
+              (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
+            );
+          }
+
+          finalList = merged;
 
           if (finalList.length > 0) {
             break;
@@ -594,6 +774,7 @@ export default function App() {
       selectedPort,
       selectedPortConfig.arrivalsUrl,
       selectedPortConfig.sourceUrl,
+      selectedPortConfig.estimateUrl,
       selectedPortConfig.trafficUrl,
     ]
   );
@@ -758,8 +939,8 @@ export default function App() {
         <View style={styles.freeRealtimeBanner}>
           <Text style={styles.freeRealtimeText}>
             {selectedPort === "helsingborg"
-              ? "Helsingborg: endast Öresundslinjens färjor (ForSea), med båtnamn från MyShipTracking. Listan är en kort rullande utdrag — inte hela dygnet / inte alla framtida ETA förrän de dyker upp i feeden (jämför med rederiets tidtabell)."
-              : "Gratis live-läge från MyShipTracking (rullande lista). Datumväljaren: igår, idag eller imorgon — passagerarfärjor enligt nyckelord."}
+              ? "Helsingborg: hämtar även den separata ETA-sidan (estimate?pid=) — hamnsidans tabell saknar ofta pendelbåtarna. Saknas alla framtida ETA visas ~20-minutersankomster (ungefärligt). Övrigt som förut."
+              : "Vi hämtar hamnsida + anropslista + ETA-sidan estimate?pid= (ofta fler rader än i hamnutdraget). Datumväljaren: igår, idag eller imorgon — passagerarfärjor."}
           </Text>
         </View>
         {selectedPort === "helsingborg" && trafficInfo ? (
@@ -866,8 +1047,8 @@ export default function App() {
 
         <Text style={styles.note}>
           {selectedPort === "helsingborg"
-            ? "Underflikarna gäller samma källor som övriga hamnar (utan källdtextrad under varje kort). Endast Öresundslinjens färjor. Feeden är kort och rullande — inte nödvändigtvis hela dygnet."
-            : "Underflikarna filtrerar samma data per källa: Ankomna = aktivitetslogg + anropslista; I hamn = tabellen fartyg i hamn; Förväntade = ETA-tabellen. Allt = samma som tidigare (Av kommande / Ankomna). Kommande = bara framtida ETA; passerad ETA hamnar under Ankomna. Endast valt dygn och nyckelords-färjor."}
+            ? "ETA-listan estimate-sidan ger oftast korrekta nästa Tycho/Aurora-tider; saknas de visas pendlings-placeholder (~20 min) under Förväntade. Underflikar som övriga hamnar."
+            : "Underflikarna filtrerar per källa. Förväntade = tabellen på hamnsidan + den separata sidan estimate?pid= (där TT-Line m.fl. ofta syns tydligare). Allt = blandat som tidigare. Kommande = framtida ETA; passerad hamnar under Ankomna."}
         </Text>
       </ScrollView>
 
