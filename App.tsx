@@ -14,6 +14,17 @@ import {
 
 type PortId = "ystad" | "trelleborg" | "helsingborg";
 type FerryStatus = "arrived" | "scheduled" | "delayed";
+/** Vilken MyShipTracking-del raden kommer ifrån (underflikar per hamn). */
+type ArrivalFeedKind = "activity" | "port_calls" | "in_port" | "expected";
+
+type ListFeedTabId = "alla" | "ankomna" | "i_hamn" | "forvantade";
+
+const LIST_FEED_TABS: { id: ListFeedTabId; label: string }[] = [
+  { id: "alla", label: "Allt" },
+  { id: "ankomna", label: "Ankomna" },
+  { id: "i_hamn", label: "I hamn" },
+  { id: "forvantade", label: "Förväntade ankomster" },
+];
 
 type FerryArrival = {
   id: string;
@@ -21,6 +32,20 @@ type FerryArrival = {
   plannedTime: Date;
   status: FerryStatus;
   source: string;
+  feedKind: ArrivalFeedKind;
+};
+
+const arrivalMatchesFeedTab = (a: FerryArrival, tab: ListFeedTabId): boolean => {
+  if (tab === "alla") {
+    return true;
+  }
+  if (tab === "ankomna") {
+    return a.feedKind === "activity" || a.feedKind === "port_calls";
+  }
+  if (tab === "i_hamn") {
+    return a.feedKind === "in_port";
+  }
+  return a.feedKind === "expected";
 };
 
 type PortConfig = {
@@ -320,6 +345,7 @@ const parseArrivalsFromMarkdown = (
         plannedTime,
         status: "arrived",
         source: "MyShipTracking vessels in port",
+        feedKind: "in_port",
       });
       continue;
     }
@@ -345,6 +371,7 @@ const parseArrivalsFromMarkdown = (
         plannedTime,
         status: "arrived",
         source: "MyShipTracking activity feed",
+        feedKind: "activity",
       });
       continue;
     }
@@ -367,6 +394,7 @@ const parseArrivalsFromMarkdown = (
         plannedTime,
         status: getStatusFromEta(plannedTime),
         source: "MyShipTracking expected arrivals",
+        feedKind: "expected",
       });
     }
   }
@@ -414,6 +442,7 @@ const parsePortCallsArrivals = (
       plannedTime,
       status: "arrived",
       source: "MyShipTracking port calls (arrivals)",
+      feedKind: "port_calls",
     });
   }
 
@@ -446,6 +475,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [trafficInfo, setTrafficInfo] = useState<TrafficInfo | null>(null);
+  const [listFeedTab, setListFeedTab] = useState<ListFeedTabId>("alla");
   const fetchGenerationRef = useRef(0);
 
   const selectedPortConfig = PORTS[selectedPort];
@@ -453,6 +483,10 @@ export default function App() {
   useEffect(() => {
     setSelectedDate((d) => clampToSelectableDay(d));
   }, []);
+
+  useEffect(() => {
+    setListFeedTab("alla");
+  }, [selectedPort]);
 
   const fetchArrivals = useCallback(
     async (refreshMode = false) => {
@@ -639,9 +673,14 @@ export default function App() {
     setCalendarViewMonth(new Date(t.getFullYear(), t.getMonth(), 1));
   };
 
-  /** Past ETA från "Expected arrivals" blir status delayed → ska visas under Ankomna, inte Kommande. */
-  const upcomingArrivals = arrivals.filter((arrival) => arrival.status === "scheduled");
-  const arrivedArrivals = arrivals.filter((arrival) => arrival.status !== "scheduled");
+  const arrivalsForTab = useMemo(
+    () => arrivals.filter((row) => arrivalMatchesFeedTab(row, listFeedTab)),
+    [arrivals, listFeedTab]
+  );
+
+  /** Past ETA från "Expected arrivals" blir status delayed → under Ankomna-gruppen, inte Kommande. */
+  const upcomingArrivals = arrivalsForTab.filter((arrival) => arrival.status === "scheduled");
+  const arrivedArrivals = arrivalsForTab.filter((arrival) => arrival.status !== "scheduled");
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -679,6 +718,27 @@ export default function App() {
             </Pressable>
           );
         })}
+      </View>
+
+      <View style={styles.feedTabBar}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.feedTabBarInner}
+        >
+          {LIST_FEED_TABS.map(({ id, label }) => {
+            const active = listFeedTab === id;
+            return (
+              <Pressable
+                key={id}
+                style={[styles.feedTab, active && styles.feedTabActive]}
+                onPress={() => setListFeedTab(id)}
+              >
+                <Text style={[styles.feedTabText, active && styles.feedTabTextActive]}>{label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
       </View>
 
       <ScrollView
@@ -733,6 +793,14 @@ export default function App() {
             {selectedPort === "helsingborg"
               ? `Inga Öresundsfärjor i utdraget för ${dateLabel}. Sajten skickar bara de senaste raderna — på kvällen kan morgondagens turer saknas tills de läggs in i feeden. Prova uppdatera senare eller se Öresundslinjens tidtabell.`
               : `Inga passagerarfärjeankomster i feeden för ${dateLabel}. (Källan har ingen full tidtabell; byt hamn eller prova igår/imorgon.)`}
+          </Text>
+        ) : null}
+
+        {!isLoading && !error && arrivals.length > 0 && arrivalsForTab.length === 0 ? (
+          <Text style={styles.helperText}>
+            Inga rader i fliken &quot;
+            {LIST_FEED_TABS.find((t) => t.id === listFeedTab)?.label ?? ""}&quot; för valt datum —
+            prova &quot;Allt&quot; eller en annan källa.
           </Text>
         ) : null}
 
@@ -798,8 +866,8 @@ export default function App() {
 
         <Text style={styles.note}>
           {selectedPort === "helsingborg"
-            ? "Endast Öresundslinjens färjor (Tycho Brahe, Aurora af Helsingborg, Hamlet, Mercuria, Uraniborg). Visade ankomster/ETA kommer från MyShipTrackings korta feed — samma skäl kan göra att inte alla turer för dygnet syns på en gång."
-            : "Data slås ihop från hamnsidan: fartyg i hamn, förväntade ankomster och aktivitetsflödet (endast ARRIVAL till hamnen), plus anropslistan. Kommande = bara framtida ETA; passerad ETA (o.märkt Försenad) hamnar under Ankomna. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord."}
+            ? "Underflikarna gäller samma källor som övriga hamnar (utan källdtextrad under varje kort). Endast Öresundslinjens färjor. Feeden är kort och rullande — inte nödvändigtvis hela dygnet."
+            : "Underflikarna filtrerar samma data per källa: Ankomna = aktivitetslogg + anropslista; I hamn = tabellen fartyg i hamn; Förväntade = ETA-tabellen. Allt = samma som tidigare (Av kommande / Ankomna). Kommande = bara framtida ETA; passerad ETA hamnar under Ankomna. Endast valt dygn och nyckelords-färjor."}
         </Text>
       </ScrollView>
 
@@ -941,6 +1009,37 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     gap: 8,
+  },
+  feedTabBar: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#1e293b",
+    paddingBottom: 6,
+  },
+  feedTabBarInner: {
+    paddingHorizontal: 10,
+    gap: 8,
+    alignItems: "center",
+    flexDirection: "row",
+  },
+  feedTab: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  feedTabActive: {
+    backgroundColor: "#334155",
+    borderColor: "#64748b",
+  },
+  feedTabText: {
+    color: "#94a3b8",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  feedTabTextActive: {
+    color: "#f8fafc",
   },
   dateRow: {
     flexDirection: "row",
