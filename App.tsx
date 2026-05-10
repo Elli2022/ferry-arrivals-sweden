@@ -666,6 +666,8 @@ export default function App() {
         setIsRefreshing(true);
       } else {
         setIsLoading(true);
+        /** Undvik att gamla hamnens rader filtreras mot ny flik → tom ”Förväntade” + bara spinner. */
+        setArrivals([]);
       }
 
       const generation = ++fetchGenerationRef.current;
@@ -976,7 +978,7 @@ export default function App() {
           </View>
         ) : null}
 
-        {isLoading ? (
+        {isLoading && arrivals.length === 0 ? (
           <View style={styles.centered}>
             <ActivityIndicator size="large" color="#2563eb" />
             <Text style={styles.helperText}>Hämtar senaste data...</Text>
