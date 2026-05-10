@@ -138,6 +138,7 @@ const PASSENGER_FERRY_KEYWORDS: Record<PortId, string[]> = {
     "tom sawyer",
     "mecklenburg",
     "nils holgersson",
+    "nils dacke",
     "huckleberry finn",
     "robin hood",
     "akca",
