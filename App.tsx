@@ -63,9 +63,9 @@ const PORTS: Record<PortId, PortConfig> = {
 
 const AUTO_REFRESH_MS = 30_000;
 /** jina/MyShipTracking kan första gången svara med tomt eller ofullständigt utdrag — omförsök innan tom vy. */
-const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 5_500;
-const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 9;
-const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 3;
+const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 3_500;
+const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 5;
+const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
 const WEEKDAY_LABELS_SV = ["mån", "tis", "ons", "tors", "fre", "lör", "sön"] as const;
@@ -639,8 +639,9 @@ export default function App() {
     setCalendarViewMonth(new Date(t.getFullYear(), t.getMonth(), 1));
   };
 
-  const arrivedArrivals = arrivals.filter((arrival) => arrival.status === "arrived");
-  const upcomingArrivals = arrivals.filter((arrival) => arrival.status !== "arrived");
+  /** Past ETA från "Expected arrivals" blir status delayed → ska visas under Ankomna, inte Kommande. */
+  const upcomingArrivals = arrivals.filter((arrival) => arrival.status === "scheduled");
+  const arrivedArrivals = arrivals.filter((arrival) => arrival.status !== "scheduled");
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -798,7 +799,7 @@ export default function App() {
         <Text style={styles.note}>
           {selectedPort === "helsingborg"
             ? "Endast Öresundslinjens färjor (Tycho Brahe, Aurora af Helsingborg, Hamlet, Mercuria, Uraniborg). Visade ankomster/ETA kommer från MyShipTrackings korta feed — samma skäl kan göra att inte alla turer för dygnet syns på en gång."
-            : "Data slås ihop från hamnsidan: fartyg i hamn, förväntade ankomster och aktivitetsflödet (endast ARRIVAL till hamnen), plus anropslistan. Ankommen = registrerad ankomst; estimerad/försenad = ETA i källan. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord."}
+            : "Data slås ihop från hamnsidan: fartyg i hamn, förväntade ankomster och aktivitetsflödet (endast ARRIVAL till hamnen), plus anropslistan. Kommande = bara framtida ETA; passerad ETA (o.märkt Försenad) hamnar under Ankomna. Endast valt kalenderdygn och passagerarfärjor enligt nyckelord."}
         </Text>
       </ScrollView>
 
