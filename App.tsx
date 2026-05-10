@@ -2,6 +2,7 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   Modal,
   Pressable,
   RefreshControl,
@@ -97,6 +98,25 @@ const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 3_500;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 5;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
+
+/** Direkta sidor på MyShipTracking (appen hämtar markdown via r.jina.ai/http://… som mellanled). */
+const PUBLIC_MST_PAGES: Record<PortId, { hamn: string; estimate: string; anrop: string }> = {
+  trelleborg: {
+    hamn: "https://www.myshiptracking.com/ports/port-of-trelleborg-in-se-sweden-id-427",
+    estimate: "https://www.myshiptracking.com/estimate?pid=427",
+    anrop: "https://myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
+  },
+  helsingborg: {
+    hamn: "https://www.myshiptracking.com/ports/port-of-helsingborg-in-se-sweden-id-209",
+    estimate: "https://www.myshiptracking.com/estimate?pid=209",
+    anrop: "https://myshiptracking.com/ports-arrivals-departures/?pid=209&type=1",
+  },
+  ystad: {
+    hamn: "https://www.myshiptracking.com/ports/port-of-ystad-in-se-sweden-id-2225",
+    estimate: "https://www.myshiptracking.com/estimate?pid=2225",
+    anrop: "https://myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
+  },
+};
 
 const WEEKDAY_LABELS_SV = ["mån", "tis", "ons", "tors", "fre", "lör", "sön"] as const;
 
@@ -1045,6 +1065,42 @@ export default function App() {
             </View>
           ))}
 
+        <View style={styles.sourcesCard}>
+          <Text style={styles.sourcesTitle}>Var hämtas datan?</Text>
+          <Text style={styles.sourcesP}>
+            Appen använder ingen betald sjöfarts-API eller AIS-nyckel. Vi läser samma publika webbsidor som vem som helst kan öppna i en webbläsare; inför appen anropas de som ren text via proxyn{" "}
+            <Text style={styles.sourceMono}>https://r.jina.ai/</Text> så att webben slipper CORS-block mot MyShipTracking.
+          </Text>
+          <Text style={styles.sourcesP}>
+            Vill du dubbelkolla eller se om fler turer finns än i utdraget, öppna originalen för{" "}
+            {selectedPortConfig.name}:
+          </Text>
+          <Pressable onPress={() => Linking.openURL(PUBLIC_MST_PAGES[selectedPort].hamn)}>
+            <Text style={styles.sourceLink}>• Hamnsida — aktivitet, fartyg i hamn, kort ETA-ruta</Text>
+          </Pressable>
+          <Pressable onPress={() => Linking.openURL(PUBLIC_MST_PAGES[selectedPort].estimate)}>
+            <Text style={styles.sourceLink}>• ETA-lista — estimate?pid= (hel tabell om MST fyllt i den)</Text>
+          </Pressable>
+          <Pressable onPress={() => Linking.openURL(PUBLIC_MST_PAGES[selectedPort].anrop)}>
+            <Text style={styles.sourceLink}>• Anropslista — ankomster i rullande lista</Text>
+          </Pressable>
+          {selectedPort === "helsingborg" ? (
+            <Pressable
+              onPress={() => Linking.openURL("https://www.oresundslinjen.se/trafikinformation")}
+            >
+              <Text style={styles.sourceLink}>• Öresundslinjen — trafikinformation (text i appen)</Text>
+            </Pressable>
+          ) : null}
+          <Text style={styles.sourcesPMuted}>
+            Gratis ”API”:er för fartyg finns ofta med registrering eller strikta gränser (AISHub m.fl.). Den här appen väljer medvetet bara fria webbutdrag så du slipper nycklar — då följer begränsningarna i MST:s korta listor.
+          </Text>
+          {selectedPort === "trelleborg" ? (
+            <Text style={styles.sourcesPMuted}>
+              För Trelleborg 10 maj i MST:s utdrag (vid senaste kontroll): estimate-tabellen kunde vara tom samtidigt som anropslistan visade passagerarfärjeankomster tidigt på dygnet — senare turer kan saknas tills de dyker i feeden eller finns bara hos rederiet (TT-Line).
+            </Text>
+          ) : null}
+        </View>
+
         <Text style={styles.note}>
           {selectedPort === "helsingborg"
             ? "ETA-listan estimate-sidan ger oftast korrekta nästa Tycho/Aurora-tider; saknas de visas pendlings-placeholder (~20 min) under Förväntade. Underflikar som övriga hamnar."
@@ -1583,5 +1639,42 @@ const styles = StyleSheet.create({
     color: "#94a3b8",
     fontSize: 12,
     lineHeight: 18,
+  },
+  sourcesCard: {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#0f172a",
+    gap: 8,
+  },
+  sourcesTitle: {
+    color: "#e2e8f0",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  sourcesP: {
+    color: "#cbd5e1",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  sourcesPMuted: {
+    color: "#94a3b8",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  sourceMono: {
+    fontFamily: "monospace",
+    color: "#93c5fd",
+    fontSize: 12,
+  },
+  sourceLink: {
+    color: "#93c5fd",
+    fontSize: 13,
+    fontWeight: "600",
+    textDecorationLine: "underline",
+    paddingVertical: 4,
   },
 });
