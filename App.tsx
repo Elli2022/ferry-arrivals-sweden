@@ -377,8 +377,25 @@ const reconcileArrivalList = (rows: FerryArrival[]): FerryArrival[] => {
   const etaMatchAfterMs = 10 * 60 * 60_000;
   const staleEtaMs = 3 * 60 * 60_000;
 
+  const dedupedEta: FerryArrival[] = [];
+  for (const eta of etaLike.sort((a, b) => a.plannedTime.getTime() - b.plannedTime.getTime())) {
+    const dup = dedupedEta.find(
+      (m) =>
+        normalizeVesselKey(m.vesselName) === normalizeVesselKey(eta.vesselName) &&
+        Math.abs(m.plannedTime.getTime() - eta.plannedTime.getTime()) < 2 * 60_000
+    );
+    if (!dup) {
+      dedupedEta.push(eta);
+      continue;
+    }
+    if (feedKindRank[eta.feedKind] > feedKindRank[dup.feedKind]) {
+      const idx = dedupedEta.indexOf(dup);
+      dedupedEta[idx] = eta;
+    }
+  }
+
   const keptEta: FerryArrival[] = [];
-  for (const eta of etaLike) {
+  for (const eta of dedupedEta) {
     const vKey = normalizeVesselKey(eta.vesselName);
     const etaDay = startOfDay(eta.plannedTime).getTime();
     const hasConfirmed = dedupedArrived.some((arr) => {
