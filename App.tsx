@@ -332,11 +332,77 @@ const arrivalsTitleForDate = (selectedDate: Date, portName: string) => {
 
 const getStatusFromEta = (plannedTime: Date): FerryStatus => {
   const delayThresholdMinutes = 20;
-  const diff = Date.now() - plannedTime.getTime();
-  if (diff > delayThresholdMinutes * 60_000) {
+  if (plannedTime.getTime() > Date.now() + delayThresholdMinutes * 60_000) {
+    return "scheduled";
+  }
+  if (Date.now() - plannedTime.getTime() > delayThresholdMinutes * 60_000) {
     return "delayed";
   }
   return "scheduled";
+};
+
+const normalizeVesselKey = (name: string) => name.toLowerCase().replace(/\s+/g, " ").trim();
+
+const feedKindRank: Record<ArrivalFeedKind, number> = {
+  port_calls: 4,
+  activity: 3,
+  in_port: 2,
+  expected: 1,
+};
+
+/** Samma ankomst från flera tabeller → en rad; ETA som redan skett ersätts av bekräftad ankomst. */
+const reconcileArrivalList = (rows: FerryArrival[]): FerryArrival[] => {
+  const arrived = rows.filter((r) => r.status === "arrived");
+  const etaLike = rows.filter((r) => r.status !== "arrived");
+
+  const dedupedArrived: FerryArrival[] = [];
+  for (const row of arrived.sort((a, b) => a.plannedTime.getTime() - b.plannedTime.getTime())) {
+    const key = normalizeVesselKey(row.vesselName);
+    const dup = dedupedArrived.find(
+      (m) =>
+        normalizeVesselKey(m.vesselName) === key &&
+        Math.abs(m.plannedTime.getTime() - row.plannedTime.getTime()) < 6 * 60_000
+    );
+    if (!dup) {
+      dedupedArrived.push(row);
+      continue;
+    }
+    if (feedKindRank[row.feedKind] > feedKindRank[dup.feedKind]) {
+      const idx = dedupedArrived.indexOf(dup);
+      dedupedArrived[idx] = row;
+    }
+  }
+
+  const etaMatchBeforeMs = 45 * 60_000;
+  const etaMatchAfterMs = 10 * 60 * 60_000;
+  const staleEtaMs = 3 * 60 * 60_000;
+
+  const keptEta: FerryArrival[] = [];
+  for (const eta of etaLike) {
+    const vKey = normalizeVesselKey(eta.vesselName);
+    const etaDay = startOfDay(eta.plannedTime).getTime();
+    const hasConfirmed = dedupedArrived.some((arr) => {
+      if (normalizeVesselKey(arr.vesselName) !== vKey) {
+        return false;
+      }
+      if (startOfDay(arr.plannedTime).getTime() !== etaDay) {
+        return false;
+      }
+      const delta = arr.plannedTime.getTime() - eta.plannedTime.getTime();
+      return delta >= -etaMatchBeforeMs && delta <= etaMatchAfterMs;
+    });
+    if (hasConfirmed) {
+      continue;
+    }
+    if (eta.status === "delayed" && Date.now() - eta.plannedTime.getTime() > staleEtaMs) {
+      continue;
+    }
+    keptEta.push(eta);
+  }
+
+  return [...dedupedArrived, ...keptEta].sort(
+    (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
+  );
 };
 
 const parseArrivalsFromMarkdown = (
@@ -640,8 +706,8 @@ const formatTime = (date: Date) =>
 
 const statusLabel: Record<FerryStatus, string> = {
   arrived: "Ankommen",
-  scheduled: "Estimerad",
-  delayed: "Försenad (est.)",
+  scheduled: "Kommande (ETA)",
+  delayed: "Försenad (ej bekräftad)",
 };
 
 export default function App() {
@@ -728,28 +794,13 @@ export default function App() {
             : [];
 
           const combined = [...parsedFromPortCalls, ...parsedFromMainPage, ...parsedFromEstimate];
-          const unique = new Map<string, FerryArrival>();
-          for (const arrival of combined) {
-            const key = `${arrival.vesselName}-${arrival.plannedTime.toISOString()}-${arrival.status}`;
-            if (!unique.has(key)) {
-              unique.set(key, arrival);
-            }
-          }
-
-          let merged = Array.from(unique.values()).sort(
-            (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
-          );
+          let merged = reconcileArrivalList(combined);
 
           if (selectedPort === "helsingborg") {
-            for (const row of supplementHelsingborgOresundIfNoUpcoming(merged, targetDate)) {
-              const key = `${row.vesselName}-${row.plannedTime.toISOString()}-${row.status}`;
-              if (!unique.has(key)) {
-                unique.set(key, row);
-              }
-            }
-            merged = Array.from(unique.values()).sort(
-              (a, b) => a.plannedTime.getTime() - b.plannedTime.getTime()
-            );
+            merged = reconcileArrivalList([
+              ...merged,
+              ...supplementHelsingborgOresundIfNoUpcoming(merged, targetDate),
+            ]);
           }
 
           finalList = merged;
@@ -1110,7 +1161,7 @@ export default function App() {
         <Text style={styles.note}>
           {selectedPort === "helsingborg"
             ? "ETA-listan estimate-sidan ger oftast korrekta nästa Tycho/Aurora-tider; saknas de visas pendlings-placeholder (~20 min) under Förväntade. Underflikar som övriga hamnar."
-            : "Underflikarna filtrerar per källa. Förväntade = tabellen på hamnsidan + den separata sidan estimate?pid= (där TT-Line m.fl. ofta syns tydligare). Allt = blandat som tidigare. Kommande = framtida ETA; passerad hamnar under Ankomna."}
+            : "Underflikarna filtrerar per källa. Om samma fartyg har både ETA och bekräftad ankomst (anropslista/aktivitet) visas bara ankomsten — gamla ETA-rader tas bort så de inte står kvar som försenade i timmar. Kommande = framtida ETA utan bekräftad ankomst."}
         </Text>
       </ScrollView>
 
