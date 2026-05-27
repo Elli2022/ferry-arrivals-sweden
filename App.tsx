@@ -98,6 +98,7 @@ const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 2_500;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 3;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
 const TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND = [241, 243] as const;
+const CORE_FETCH_TIMEOUT_MS = 7_000;
 
 const fetchTextSafe = async (url: string): Promise<{ ok: boolean; text: string }> => {
   try {
@@ -107,6 +108,17 @@ const fetchTextSafe = async (url: string): Promise<{ ok: boolean; text: string }
   } catch {
     return { ok: false, text: "" };
   }
+};
+const fetchTextSafeWithTimeout = async (
+  url: string,
+  timeoutMs = CORE_FETCH_TIMEOUT_MS
+): Promise<{ ok: boolean; text: string }> => {
+  return Promise.race([
+    fetchTextSafe(url),
+    new Promise<{ ok: boolean; text: string }>((resolve) =>
+      setTimeout(() => resolve({ ok: false, text: "" }), timeoutMs)
+    ),
+  ]);
 };
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
@@ -855,11 +867,9 @@ export default function App() {
             }
           }
 
-          const estUrl = selectedPortConfig.estimateUrl;
-          const [srcPack, callsPack, estPack] = await Promise.all([
-            fetchTextSafe(selectedPortConfig.sourceUrl),
-            fetchTextSafe(selectedPortConfig.arrivalsUrl),
-            estUrl ? fetchTextSafe(estUrl) : Promise.resolve({ ok: true, text: "" }),
+          const [srcPack, callsPack] = await Promise.all([
+            fetchTextSafeWithTimeout(selectedPortConfig.sourceUrl),
+            fetchTextSafeWithTimeout(selectedPortConfig.arrivalsUrl),
           ]);
 
           if (!srcPack.ok || !callsPack.ok) {
@@ -869,7 +879,6 @@ export default function App() {
           hadCoreSuccess = true;
           const markdown = srcPack.text;
           const portCallsMarkdown = callsPack.text;
-          const estimateMarkdown = estPack.ok ? estPack.text : "";
           if (fetchGenerationRef.current !== generation) {
             return;
           }
@@ -881,39 +890,10 @@ export default function App() {
             targetDate
           );
           const parsedFromMainPage = parseArrivalsFromMarkdown(markdown, selectedPort, targetDate);
-          const parsedFromEstimate = estimateMarkdown
-            ? parseEstimatePageMarkdown(estimateMarkdown, selectedPort, targetDate)
-            : [];
-          let parsedFromTTLine: FerryArrival[] = [];
-          if (selectedPort === "trelleborg") {
-            const schedulePacks = await Promise.all(
-              TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND.map((routeId) =>
-                fetchTextSafe(
-                  `https://r.jina.ai/http://www.e-ferry.eu/pub/default.aspx?Date=${dateIsoLocal(targetDate)}&ID=${routeId}&L=EN&Page=WeekDay`
-                )
-              )
-            );
-            if (fetchGenerationRef.current !== generation) {
-              return;
-            }
-            parsedFromTTLine = schedulePacks
-              .map((pack, idx) =>
-                pack.ok
-                  ? parseTTLineScheduleForDate(
-                      pack.text,
-                      targetDate,
-                      TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND[idx]
-                    )
-                  : []
-              )
-              .flat();
-          }
 
           const combined = [
             ...parsedFromPortCalls,
             ...parsedFromMainPage,
-            ...parsedFromEstimate,
-            ...parsedFromTTLine,
           ];
           let merged = reconcileArrivalList(combined);
 
@@ -925,6 +905,53 @@ export default function App() {
           }
 
           finalList = merged;
+          setArrivals(finalList);
+          arrivalsCacheRef.current[cacheKey] = finalList;
+          setEmptyResultCount((prev) => (finalList.length > 0 ? 0 : prev + 1));
+          setLastUpdated(new Date());
+
+          const estUrl = selectedPortConfig.estimateUrl;
+          if (estUrl) {
+            void (async () => {
+              const estPack = await fetchTextSafe(estUrl);
+              if (!estPack.ok || fetchGenerationRef.current !== generation) {
+                return;
+              }
+              const estimateRows = parseEstimatePageMarkdown(estPack.text, selectedPort, targetDate);
+              let ttRows: FerryArrival[] = [];
+              if (selectedPort === "trelleborg") {
+                const schedulePacks = await Promise.all(
+                  TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND.map((routeId) =>
+                    fetchTextSafe(
+                      `https://r.jina.ai/http://www.e-ferry.eu/pub/default.aspx?Date=${dateIsoLocal(targetDate)}&ID=${routeId}&L=EN&Page=WeekDay`
+                    )
+                  )
+                );
+                if (fetchGenerationRef.current !== generation) {
+                  return;
+                }
+                ttRows = schedulePacks
+                  .map((pack, idx) =>
+                    pack.ok
+                      ? parseTTLineScheduleForDate(
+                          pack.text,
+                          targetDate,
+                          TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND[idx]
+                        )
+                      : []
+                  )
+                  .flat();
+              }
+              const enriched = reconcileArrivalList([...finalList, ...estimateRows, ...ttRows]);
+              if (fetchGenerationRef.current !== generation) {
+                return;
+              }
+              setArrivals(enriched);
+              arrivalsCacheRef.current[cacheKey] = enriched;
+              setEmptyResultCount((prev) => (enriched.length > 0 ? 0 : prev + 1));
+              setLastUpdated(new Date());
+            })();
+          }
 
           if (finalList.length > 0) {
             break;
@@ -942,11 +969,6 @@ export default function App() {
           }
           throw new Error("Kunde inte läsa data från källan");
         }
-        setArrivals(finalList);
-        arrivalsCacheRef.current[cacheKey] = finalList;
-        setEmptyResultCount((prev) => (finalList.length > 0 ? 0 : prev + 1));
-        setLastUpdated(new Date());
-
         if (selectedPort === "helsingborg" && selectedPortConfig.trafficUrl) {
           const trafficUrl = selectedPortConfig.trafficUrl;
           void (async () => {
