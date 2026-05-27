@@ -834,6 +834,7 @@ export default function App() {
           : ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL;
 
         let finalList: FerryArrival[] = [];
+        let hadCoreSuccess = false;
 
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (attempt > 0) {
@@ -851,8 +852,10 @@ export default function App() {
           ]);
 
           if (!srcPack.ok || !callsPack.ok) {
-            throw new Error("Kunde inte läsa data från källan");
+            // Tillfälligt källa/proxy-fel: försök igen innan vi visar rött felläge.
+            continue;
           }
+          hadCoreSuccess = true;
           const markdown = srcPack.text;
           const portCallsMarkdown = callsPack.text;
           const estimateMarkdown = estPack.ok ? estPack.text : "";
@@ -917,6 +920,9 @@ export default function App() {
           }
         }
 
+        if (!hadCoreSuccess) {
+          throw new Error("Kunde inte läsa data från källan");
+        }
         setArrivals(finalList);
         setEmptyResultCount((prev) => (finalList.length > 0 ? 0 : prev + 1));
         setLastUpdated(new Date());
