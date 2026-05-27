@@ -800,6 +800,7 @@ export default function App() {
   const [listFeedTab, setListFeedTab] = useState<ListFeedTabId>("alla");
   const [emptyResultCount, setEmptyResultCount] = useState(0);
   const fetchGenerationRef = useRef(0);
+  const arrivalsCacheRef = useRef<Record<string, FerryArrival[]>>({});
 
   const selectedPortConfig = PORTS[selectedPort];
 
@@ -811,6 +812,11 @@ export default function App() {
     setListFeedTab("alla");
   }, [selectedPort]);
 
+  const cacheKey = useMemo(
+    () => `${selectedPort}-${dateIsoLocal(selectedDate)}`,
+    [selectedPort, selectedDate]
+  );
+
   useEffect(() => {
     setEmptyResultCount(0);
   }, [selectedPort, selectedDate]);
@@ -821,8 +827,13 @@ export default function App() {
         setIsRefreshing(true);
       } else {
         setIsLoading(true);
-        /** Undvik att gamla hamnens rader filtreras mot ny flik → tom ”Förväntade” + bara spinner. */
-        setArrivals([]);
+        const cached = arrivalsCacheRef.current[cacheKey];
+        // Visa direkt senaste lyckade svar för hamn+datum om vi har cache.
+        if (cached) {
+          setArrivals(cached);
+        } else {
+          setArrivals([]);
+        }
       }
 
       const generation = ++fetchGenerationRef.current;
@@ -921,9 +932,18 @@ export default function App() {
         }
 
         if (!hadCoreSuccess) {
+          const cached = arrivalsCacheRef.current[cacheKey];
+          if (cached) {
+            setArrivals(cached);
+            setError(null);
+            setIsLoading(false);
+            setIsRefreshing(false);
+            return;
+          }
           throw new Error("Kunde inte läsa data från källan");
         }
         setArrivals(finalList);
+        arrivalsCacheRef.current[cacheKey] = finalList;
         setEmptyResultCount((prev) => (finalList.length > 0 ? 0 : prev + 1));
         setLastUpdated(new Date());
 
@@ -963,6 +983,7 @@ export default function App() {
     [
       selectedDate,
       selectedPort,
+      cacheKey,
       selectedPortConfig.arrivalsUrl,
       selectedPortConfig.sourceUrl,
       selectedPortConfig.estimateUrl,
