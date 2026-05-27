@@ -98,7 +98,7 @@ const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 2_500;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 3;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
 const TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND = [241, 243] as const;
-const CORE_FETCH_TIMEOUT_MS = 7_000;
+const CORE_FETCH_TIMEOUT_MS = 12_000;
 
 const fetchTextSafe = async (url: string): Promise<{ ok: boolean; text: string }> => {
   try {
@@ -119,6 +119,26 @@ const fetchTextSafeWithTimeout = async (
       setTimeout(() => resolve({ ok: false, text: "" }), timeoutMs)
     ),
   ]);
+};
+
+const withMirrorVariants = (url: string): string[] => {
+  const variants = [url];
+  if (url.includes("://www.")) {
+    variants.push(url.replace("://www.", "://"));
+  } else {
+    variants.push(url.replace("://", "://www."));
+  }
+  return Array.from(new Set(variants));
+};
+
+const fetchTextFromAnyMirror = async (url: string): Promise<{ ok: boolean; text: string }> => {
+  for (const variant of withMirrorVariants(url)) {
+    const res = await fetchTextSafeWithTimeout(variant);
+    if (res.ok) {
+      return res;
+    }
+  }
+  return { ok: false, text: "" };
 };
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
@@ -811,6 +831,7 @@ export default function App() {
   const [trafficInfo, setTrafficInfo] = useState<TrafficInfo | null>(null);
   const [listFeedTab, setListFeedTab] = useState<ListFeedTabId>("alla");
   const [emptyResultCount, setEmptyResultCount] = useState(0);
+  const [errorStreak, setErrorStreak] = useState(0);
   const fetchGenerationRef = useRef(0);
   const arrivalsCacheRef = useRef<Record<string, FerryArrival[]>>({});
 
@@ -868,8 +889,8 @@ export default function App() {
           }
 
           const [srcPack, callsPack] = await Promise.all([
-            fetchTextSafeWithTimeout(selectedPortConfig.sourceUrl),
-            fetchTextSafeWithTimeout(selectedPortConfig.arrivalsUrl),
+            fetchTextFromAnyMirror(selectedPortConfig.sourceUrl),
+            fetchTextFromAnyMirror(selectedPortConfig.arrivalsUrl),
           ]);
 
           if (!srcPack.ok || !callsPack.ok) {
@@ -908,12 +929,13 @@ export default function App() {
           setArrivals(finalList);
           arrivalsCacheRef.current[cacheKey] = finalList;
           setEmptyResultCount((prev) => (finalList.length > 0 ? 0 : prev + 1));
+        setErrorStreak(0);
           setLastUpdated(new Date());
 
           const estUrl = selectedPortConfig.estimateUrl;
           if (estUrl) {
             void (async () => {
-              const estPack = await fetchTextSafe(estUrl);
+              const estPack = await fetchTextFromAnyMirror(estUrl);
               if (!estPack.ok || fetchGenerationRef.current !== generation) {
                 return;
               }
@@ -996,7 +1018,18 @@ export default function App() {
           setTrafficInfo(null);
         }
       } catch (_err) {
-        setError("Kunde inte hämta live-data just nu. Försök igen.");
+        const nextStreak = errorStreak + 1;
+        setErrorStreak(nextStreak);
+        if (nextStreak >= 2) {
+          setError("Kunde inte hämta live-data just nu. Försök igen.");
+        } else {
+          setError(null);
+          setTimeout(() => {
+            if (fetchGenerationRef.current === generation) {
+              void fetchArrivals(true);
+            }
+          }, 1800);
+        }
       } finally {
         setIsLoading(false);
         setIsRefreshing(false);
@@ -1006,6 +1039,7 @@ export default function App() {
       selectedDate,
       selectedPort,
       cacheKey,
+      errorStreak,
       selectedPortConfig.arrivalsUrl,
       selectedPortConfig.sourceUrl,
       selectedPortConfig.estimateUrl,
