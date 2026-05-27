@@ -97,6 +97,7 @@ const AUTO_REFRESH_MS = 30_000;
 const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 2_500;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 3;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
+const TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND = [241, 243] as const;
 
 const fetchTextSafe = async (url: string): Promise<{ ok: boolean; text: string }> => {
   try {
@@ -632,6 +633,61 @@ const parseEstimatePageMarkdown = (
   return arrivals;
 };
 
+const dateIsoLocal = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+const weekdayEnForDate = (d: Date) =>
+  new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(d);
+
+const parseTTLineScheduleForDate = (
+  markdown: string,
+  targetDate: Date,
+  routeId: number
+): FerryArrival[] => {
+  const dayToken = `${weekdayEnForDate(targetDate)} (${dateIsoLocal(targetDate)})`;
+  const rows = markdown.split("\n");
+  const results: FerryArrival[] = [];
+  let inDayBlock = false;
+
+  for (const row of rows) {
+    if (row.includes(dayToken)) {
+      inDayBlock = true;
+      continue;
+    }
+    if (inDayBlock && /^[A-Za-z]+ \(\d{4}-\d{2}-\d{2}\)/.test(row.trim())) {
+      break;
+    }
+    if (!inDayBlock || !row.includes("| DepartureArrival |")) {
+      continue;
+    }
+
+    const matches = Array.from(row.matchAll(/(\d{2}:\d{2})(\^?)/g)).map((m) => ({
+      time: m[1],
+      nextDay: m[2] === "^",
+    }));
+    for (let i = 0; i + 1 < matches.length; i += 2) {
+      const arrival = matches[i + 1];
+      if (arrival.nextDay) {
+        continue;
+      }
+      const plannedTime = parseDate(`${dateIsoLocal(targetDate)} ${arrival.time}`);
+      if (!plannedTime || !isSameCalendarDay(plannedTime, targetDate)) {
+        continue;
+      }
+      results.push({
+        id: `trelleborg-ttline-${routeId}-${plannedTime.toISOString()}`,
+        vesselName: "TT-Line (tidtabell)",
+        plannedTime,
+        status: getStatusFromEta(plannedTime),
+        source: `TT-Line tidtabell (route ${routeId}, ej AIS-bekräftad)`,
+        feedKind: "expected",
+      });
+    }
+  }
+
+  return results;
+};
+
 const ORESUND_SHUTTLE_NAMES = ["Tycho Brahe", "Aurora af Helsingborg"] as const;
 
 /**
@@ -742,6 +798,7 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [trafficInfo, setTrafficInfo] = useState<TrafficInfo | null>(null);
   const [listFeedTab, setListFeedTab] = useState<ListFeedTabId>("alla");
+  const [emptyResultCount, setEmptyResultCount] = useState(0);
   const fetchGenerationRef = useRef(0);
 
   const selectedPortConfig = PORTS[selectedPort];
@@ -753,6 +810,10 @@ export default function App() {
   useEffect(() => {
     setListFeedTab("alla");
   }, [selectedPort]);
+
+  useEffect(() => {
+    setEmptyResultCount(0);
+  }, [selectedPort, selectedDate]);
 
   const fetchArrivals = useCallback(
     async (refreshMode = false) => {
@@ -809,8 +870,37 @@ export default function App() {
           const parsedFromEstimate = estimateMarkdown
             ? parseEstimatePageMarkdown(estimateMarkdown, selectedPort, targetDate)
             : [];
+          let parsedFromTTLine: FerryArrival[] = [];
+          if (selectedPort === "trelleborg") {
+            const schedulePacks = await Promise.all(
+              TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND.map((routeId) =>
+                fetchTextSafe(
+                  `https://r.jina.ai/http://www.e-ferry.eu/pub/default.aspx?Date=${dateIsoLocal(targetDate)}&ID=${routeId}&L=EN&Page=WeekDay`
+                )
+              )
+            );
+            if (fetchGenerationRef.current !== generation) {
+              return;
+            }
+            parsedFromTTLine = schedulePacks
+              .map((pack, idx) =>
+                pack.ok
+                  ? parseTTLineScheduleForDate(
+                      pack.text,
+                      targetDate,
+                      TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND[idx]
+                    )
+                  : []
+              )
+              .flat();
+          }
 
-          const combined = [...parsedFromPortCalls, ...parsedFromMainPage, ...parsedFromEstimate];
+          const combined = [
+            ...parsedFromPortCalls,
+            ...parsedFromMainPage,
+            ...parsedFromEstimate,
+            ...parsedFromTTLine,
+          ];
           let merged = reconcileArrivalList(combined);
 
           if (selectedPort === "helsingborg") {
@@ -828,6 +918,7 @@ export default function App() {
         }
 
         setArrivals(finalList);
+        setEmptyResultCount((prev) => (finalList.length > 0 ? 0 : prev + 1));
         setLastUpdated(new Date());
 
         if (selectedPort === "helsingborg" && selectedPortConfig.trafficUrl) {
@@ -1063,7 +1154,7 @@ export default function App() {
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        {!isLoading && !error && arrivals.length === 0 ? (
+        {!isLoading && !error && arrivals.length === 0 && emptyResultCount >= 2 ? (
           <Text style={styles.helperText}>
             {selectedPort === "helsingborg"
               ? `Inga Öresundsfärjor i utdraget för ${dateLabel}. Sajten skickar bara de senaste raderna — på kvällen kan morgondagens turer saknas tills de läggs in i feeden. Prova uppdatera senare eller se Öresundslinjens tidtabell.`
