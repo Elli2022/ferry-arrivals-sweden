@@ -423,7 +423,7 @@ const reconcileArrivalList = (rows: FerryArrival[]): FerryArrival[] => {
     const dup = dedupedEta.find(
       (m) =>
         normalizeVesselKey(m.vesselName) === normalizeVesselKey(eta.vesselName) &&
-        Math.abs(m.plannedTime.getTime() - eta.plannedTime.getTime()) < 2 * 60_000
+        Math.abs(m.plannedTime.getTime() - eta.plannedTime.getTime()) <= 2 * 60_000
     );
     if (!dup) {
       dedupedEta.push(eta);
@@ -843,7 +843,7 @@ const fetchServerAggregated = async (
     const parsed =
       json.arrivals?.map((r) => ({
         ...r,
-        plannedTime: new Date(r.plannedTime),
+        plannedTime: parseDate(r.plannedTime) ?? new Date(r.plannedTime),
       })) ?? [];
     return { ok: true, arrivals: parsed };
   } catch {

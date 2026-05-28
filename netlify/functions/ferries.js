@@ -81,6 +81,15 @@ const isSameDay = (a, b) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 const statusFromEta = (d) => (Date.now() - d.getTime() > 20 * 60 * 1000 ? "delayed" : "scheduled");
 
+const toLocalLikeString = (d) => {
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const min = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+};
+
 const vesselName = (text) =>
   String(text)
     .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
@@ -211,7 +220,7 @@ const reconcile = (rows) => {
   }
   return Array.from(byKey.values())
     .sort((a, b) => a.plannedTime.getTime() - b.plannedTime.getTime())
-    .map((r) => ({ ...r, plannedTime: r.plannedTime.toISOString() }));
+    .map((r) => ({ ...r, plannedTime: toLocalLikeString(r.plannedTime) }));
 };
 
 exports.handler = async (event) => {
