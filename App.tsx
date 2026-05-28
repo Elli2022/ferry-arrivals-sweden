@@ -1204,6 +1204,12 @@ export default function App() {
         {lastUpdated ? (
           <Text style={styles.lastUpdated}>Senast uppdaterad {formatTime(lastUpdated)}</Text>
         ) : null}
+        {(isLoading || isRefreshing) ? (
+          <View style={styles.loadingBanner}>
+            <ActivityIndicator size="small" color="#93c5fd" />
+            <Text style={styles.loadingBannerText}>Uppdaterar färjedata...</Text>
+          </View>
+        ) : null}
         <View style={styles.freeRealtimeBanner}>
           <Text style={styles.freeRealtimeText}>
             {selectedPort === "helsingborg"
@@ -1792,6 +1798,22 @@ const styles = StyleSheet.create({
   lastUpdated: {
     color: "#94a3b8",
     fontSize: 12,
+  },
+  loadingBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#1e40af",
+    backgroundColor: "#0b2545",
+  },
+  loadingBannerText: {
+    color: "#dbeafe",
+    fontSize: 12,
+    fontWeight: "700",
   },
   freeRealtimeBanner: {
     backgroundColor: "#0b2545",
