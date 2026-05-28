@@ -1231,13 +1231,38 @@ export default function App() {
         ) : null}
 
         {isLoading && arrivals.length === 0 ? (
-          <View style={styles.centered}>
-            <ActivityIndicator size="large" color="#2563eb" />
-            <Text style={styles.helperText}>Hämtar senaste data...</Text>
-            <Text style={styles.loadingSubhint}>
-              Proxyn/hamnsidan kan svara segt — vid första tomma svaret väntar vi och försöker igen
-              innan vi visar &quot;inga ankomster&quot;.
-            </Text>
+          <View style={styles.skeletonWrap}>
+            <View style={styles.skeletonCard}>
+              <View style={styles.skeletonRow}>
+                <View style={[styles.skeletonLine, styles.skeletonTime]} />
+                <View style={[styles.skeletonLine, styles.skeletonBadge]} />
+              </View>
+              <View style={[styles.skeletonLine, styles.skeletonVessel]} />
+              <View style={[styles.skeletonLine, styles.skeletonSource]} />
+            </View>
+            <View style={styles.skeletonCard}>
+              <View style={styles.skeletonRow}>
+                <View style={[styles.skeletonLine, styles.skeletonTime]} />
+                <View style={[styles.skeletonLine, styles.skeletonBadge]} />
+              </View>
+              <View style={[styles.skeletonLine, styles.skeletonVessel]} />
+              <View style={[styles.skeletonLine, styles.skeletonSource]} />
+            </View>
+            <View style={styles.skeletonCard}>
+              <View style={styles.skeletonRow}>
+                <View style={[styles.skeletonLine, styles.skeletonTime]} />
+                <View style={[styles.skeletonLine, styles.skeletonBadge]} />
+              </View>
+              <View style={[styles.skeletonLine, styles.skeletonVessel]} />
+              <View style={[styles.skeletonLine, styles.skeletonSource]} />
+            </View>
+            <View style={styles.centered}>
+              <ActivityIndicator size="small" color="#2563eb" />
+              <Text style={styles.helperText}>Hämtar senaste data...</Text>
+              <Text style={styles.loadingSubhint}>
+                Proxyn/hamnsidan kan svara segt — vi visar laddningskort tills första svar kommer.
+              </Text>
+            </View>
           </View>
         ) : null}
 
@@ -1846,6 +1871,42 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: 12,
     maxWidth: 340,
+  },
+  skeletonWrap: {
+    gap: 10,
+  },
+  skeletonCard: {
+    backgroundColor: "#0f172a",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#1f2937",
+    padding: 14,
+    gap: 10,
+  },
+  skeletonRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  skeletonLine: {
+    borderRadius: 999,
+    backgroundColor: "#1e293b",
+  },
+  skeletonTime: {
+    width: 78,
+    height: 22,
+  },
+  skeletonBadge: {
+    width: 118,
+    height: 18,
+  },
+  skeletonVessel: {
+    width: "64%",
+    height: 18,
+  },
+  skeletonSource: {
+    width: "42%",
+    height: 14,
   },
   error: {
     color: "#fecaca",
