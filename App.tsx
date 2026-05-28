@@ -823,6 +823,34 @@ const statusLabel: Record<FerryStatus, string> = {
   delayed: "Försenad (ej bekräftad)",
 };
 
+const fetchServerAggregated = async (
+  portId: PortId,
+  date: Date
+): Promise<{ ok: boolean; arrivals: FerryArrival[] }> => {
+  const dateParam = dateIsoLocal(date);
+  try {
+    const res = await fetch(`/.netlify/functions/ferries?port=${portId}&date=${dateParam}`);
+    if (!res.ok) {
+      return { ok: false, arrivals: [] };
+    }
+    const json = (await res.json()) as {
+      arrivals?: Array<
+        Omit<FerryArrival, "plannedTime"> & {
+          plannedTime: string;
+        }
+      >;
+    };
+    const parsed =
+      json.arrivals?.map((r) => ({
+        ...r,
+        plannedTime: new Date(r.plannedTime),
+      })) ?? [];
+    return { ok: true, arrivals: parsed };
+  } catch {
+    return { ok: false, arrivals: [] };
+  }
+};
+
 export default function App() {
   const [selectedPort, setSelectedPort] = useState<PortId>("trelleborg");
   const [selectedDate, setSelectedDate] = useState<Date>(() => clampToSelectableDay(new Date()));
@@ -894,6 +922,25 @@ export default function App() {
             if (fetchGenerationRef.current !== generation) {
               return;
             }
+          }
+
+          const serverAggregated = await fetchServerAggregated(selectedPort, selectedDate);
+          if (fetchGenerationRef.current !== generation) {
+            return;
+          }
+          if (serverAggregated.ok && serverAggregated.arrivals.length > 0) {
+            finalList = reconcileArrivalList(serverAggregated.arrivals);
+            hadCoreSuccess = true;
+            const stableImmediate = reconcileArrivalList([
+              ...finalList,
+              ...keepLikelyUpcomingExpected(arrivalsCacheRef.current[cacheKey] ?? []),
+            ]);
+            setArrivals(stableImmediate);
+            arrivalsCacheRef.current[cacheKey] = stableImmediate;
+            setEmptyResultCount((prev) => (stableImmediate.length > 0 ? 0 : prev + 1));
+            setErrorStreak(0);
+            setLastUpdated(new Date());
+            break;
           }
 
           const [srcPack, callsPack] = await Promise.all([
