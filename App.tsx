@@ -423,13 +423,17 @@ const reconcileArrivalList = (rows: FerryArrival[]): FerryArrival[] => {
     const dup = dedupedEta.find(
       (m) =>
         normalizeVesselKey(m.vesselName) === normalizeVesselKey(eta.vesselName) &&
-        Math.abs(m.plannedTime.getTime() - eta.plannedTime.getTime()) <= 2 * 60_000
+        Math.abs(m.plannedTime.getTime() - eta.plannedTime.getTime()) <= 2 * 60 * 60_000
     );
     if (!dup) {
       dedupedEta.push(eta);
       continue;
     }
-    if (feedKindRank[eta.feedKind] > feedKindRank[dup.feedKind]) {
+    if (
+      feedKindRank[eta.feedKind] > feedKindRank[dup.feedKind] ||
+      (feedKindRank[eta.feedKind] === feedKindRank[dup.feedKind] &&
+        eta.plannedTime.getTime() > dup.plannedTime.getTime())
+    ) {
       const idx = dedupedEta.indexOf(dup);
       dedupedEta[idx] = eta;
     }

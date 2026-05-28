@@ -215,12 +215,38 @@ const parseTTLine = (markdown, targetDate, routeId) => {
 };
 
 const reconcile = (rows) => {
-  const byKey = new Map();
+  const byExactKey = new Map();
   for (const r of rows) {
     const key = `${r.vesselName.toLowerCase().replace(/\s+/g, " ")}|${r.plannedTime.toISOString()}|${r.status}`;
-    if (!byKey.has(key)) byKey.set(key, r);
+    if (!byExactKey.has(key)) byExactKey.set(key, r);
   }
-  return Array.from(byKey.values())
+  const deduped = Array.from(byExactKey.values());
+
+  const expectedWindowMs = 2 * 60 * 60 * 1000;
+  const mergedExpected = [];
+  for (const row of deduped) {
+    if (row.status === "arrived") {
+      mergedExpected.push(row);
+      continue;
+    }
+    const vKey = row.vesselName.toLowerCase().replace(/\s+/g, " ").trim();
+    const dup = mergedExpected.find(
+      (m) =>
+        m.status !== "arrived" &&
+        m.vesselName.toLowerCase().replace(/\s+/g, " ").trim() === vKey &&
+        Math.abs(m.plannedTime.getTime() - row.plannedTime.getTime()) <= expectedWindowMs
+    );
+    if (!dup) {
+      mergedExpected.push(row);
+      continue;
+    }
+    if (row.plannedTime.getTime() > dup.plannedTime.getTime()) {
+      const idx = mergedExpected.indexOf(dup);
+      mergedExpected[idx] = row;
+    }
+  }
+
+  return mergedExpected
     .sort((a, b) => a.plannedTime.getTime() - b.plannedTime.getTime())
     .map((r) => ({ ...r, plannedTime: toLocalLikeString(r.plannedTime) }));
 };
