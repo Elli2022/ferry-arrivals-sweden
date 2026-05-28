@@ -140,6 +140,14 @@ const fetchTextFromAnyMirror = async (url: string): Promise<{ ok: boolean; text:
   }
   return { ok: false, text: "" };
 };
+
+const keepLikelyUpcomingExpected = (rows: FerryArrival[]) =>
+  rows.filter(
+    (r) =>
+      r.feedKind === "expected" &&
+      r.status === "scheduled" &&
+      r.plannedTime.getTime() >= Date.now() - 30 * 60 * 1000
+  );
 const PORT_ORDER: PortId[] = ["trelleborg", "helsingborg", "ystad"];
 
 /** Direkta sidor på MyShipTracking (appen hämtar markdown via r.jina.ai/http://… som mellanled). */
@@ -926,10 +934,15 @@ export default function App() {
           }
 
           finalList = merged;
-          setArrivals(finalList);
-          arrivalsCacheRef.current[cacheKey] = finalList;
-          setEmptyResultCount((prev) => (finalList.length > 0 ? 0 : prev + 1));
-        setErrorStreak(0);
+          const cachedForKey = arrivalsCacheRef.current[cacheKey] ?? [];
+          const stableImmediate = reconcileArrivalList([
+            ...finalList,
+            ...keepLikelyUpcomingExpected(cachedForKey),
+          ]);
+          setArrivals(stableImmediate);
+          arrivalsCacheRef.current[cacheKey] = stableImmediate;
+          setEmptyResultCount((prev) => (stableImmediate.length > 0 ? 0 : prev + 1));
+          setErrorStreak(0);
           setLastUpdated(new Date());
 
           const estUrl = selectedPortConfig.estimateUrl;
@@ -964,7 +977,7 @@ export default function App() {
                   )
                   .flat();
               }
-              const enriched = reconcileArrivalList([...finalList, ...estimateRows, ...ttRows]);
+              const enriched = reconcileArrivalList([...stableImmediate, ...estimateRows, ...ttRows]);
               if (fetchGenerationRef.current !== generation) {
                 return;
               }
