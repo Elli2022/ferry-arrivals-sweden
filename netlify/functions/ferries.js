@@ -229,32 +229,46 @@ const parseEstimate = (markdown, port, targetDate, includeAll = false) => {
   return out;
 };
 
+/**
+ * e-ferry lägger hela tidtabellen på en rad och återanvänder tider i boknings-URL:er, så vi
+ * arbetar på hela texten: ta utresetabellen (= ankomster TILL Trelleborg), klipp ut dygnsblocket,
+ * strippa länkar (annars dubbelräknas tider) och para ihop avgång/ankomst. Andra tiden = ankomst.
+ */
 const parseTTLine = (markdown, targetDate, routeId) => {
   const out = [];
   const dayToken = new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(targetDate);
   const dateToken = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, "0")}-${String(targetDate.getDate()).padStart(2, "0")}`;
-  const rows = splitLines(markdown);
-  let inDay = false;
-  for (const row of rows) {
-    if (row.includes(`${dayToken} (${dateToken})`)) {
-      inDay = true;
-      continue;
-    }
-    if (inDay && /^[A-Za-z]+ \(\d{4}-\d{2}-\d{2}\)/.test(row.trim())) break;
-    if (!inDay || !row.includes("| DepartureArrival |")) continue;
-    const times = Array.from(row.matchAll(/(\d{2}:\d{2})(\^?)/g)).map((m) => ({ time: m[1], next: m[2] === "^" }));
-    for (let i = 0; i + 1 < times.length; i += 2) {
-      if (times[i + 1].next) continue;
-      const t = parseDate(`${dateToken} ${times[i + 1].time}`);
-      if (!t || !isSameDay(t, targetDate)) continue;
-      out.push({
-        vesselName: "TT-Line (tidtabell)",
-        plannedTime: t,
-        status: statusFromEta(t),
-        source: `TT-Line tidtabell (route ${routeId}, ej AIS-bekräftad)`,
-        feedKind: "expected",
-      });
-    }
+  const dayLabel = `${dayToken} (${dateToken})`;
+
+  const text = String(markdown);
+  const outbound = text.split(/RETURN TIMETABLE/i)[0];
+  const start = outbound.indexOf(dayLabel);
+  if (start === -1) return out;
+
+  const after = outbound.slice(start + dayLabel.length);
+  const nextDay = after.search(/[A-Za-z]+ \(\d{4}-\d{2}-\d{2}\)/);
+  const rawBlock = nextDay === -1 ? after : after.slice(0, nextDay);
+  const block = rawBlock.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+
+  const titleMatch = text.match(/([A-Za-zÀ-ÿ.\- ]+?),\s*Germany\s*-\s*Trelleborg/i);
+  const origin = titleMatch ? titleMatch[1].trim() : `route ${routeId}`;
+
+  const times = Array.from(block.matchAll(/(\d{2}:\d{2})(\^?)/g)).map((m) => ({
+    time: m[1],
+    next: m[2] === "^",
+  }));
+  for (let i = 0; i + 1 < times.length; i += 2) {
+    const arr = times[i + 1];
+    if (arr.next) continue;
+    const t = parseDate(`${dateToken} ${arr.time}`);
+    if (!t || !isSameDay(t, targetDate)) continue;
+    out.push({
+      vesselName: `TT-Line ${origin}–Trelleborg`,
+      plannedTime: t,
+      status: statusFromEta(t),
+      source: `TT-Line tidtabell (${origin}–Trelleborg, ej AIS-bekräftad)`,
+      feedKind: "expected",
+    });
   }
   return out;
 };
@@ -326,7 +340,23 @@ const reconcile = (rows) => {
     return true;
   });
 
-  return cleaned
+  // TT-Line-tidtabellsrader är fallback: dölj dem när en riktig AIS-rad (ankommen/ETA) redan
+  // täcker samma tidsfönster (±30 min), så samma tur inte visas dubbelt.
+  const isTimetable = (r) => /tidtabell/i.test(r.source || "");
+  const realRows = cleaned.filter((r) => !isTimetable(r));
+  const filtered = cleaned.filter((row) => {
+    if (!isTimetable(row)) {
+      return true;
+    }
+    const covered = realRows.some(
+      (r) =>
+        dayKeyOf(r.plannedTime) === dayKeyOf(row.plannedTime) &&
+        Math.abs(r.plannedTime.getTime() - row.plannedTime.getTime()) <= 30 * 60_000
+    );
+    return !covered;
+  });
+
+  return filtered
     .sort((a, b) => a.plannedTime.getTime() - b.plannedTime.getTime())
     .slice(0, MAX_RESULT_ROWS)
     .map((r) => ({ ...r, plannedTime: toLocalLikeString(r.plannedTime) }));
