@@ -28,7 +28,8 @@ const PORTS = {
     arrivalsUrl:
       "https://r.jina.ai/http://www.myshiptracking.com/ports-arrivals-departures/?pid=427&type=1",
     estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=427",
-    ttlineRouteIds: [241, 243],
+    // e-ferry route-ID för ankomster TILL Trelleborg: 241 TT-Line Rostock, 243 TT-Line Travemünde, 222 Stena Rostock.
+    scheduleRouteIds: [241, 243, 222],
   },
   helsingborg: {
     sourceUrl:
@@ -233,8 +234,15 @@ const parseEstimate = (markdown, port, targetDate, includeAll = false) => {
  * e-ferry lägger hela tidtabellen på en rad och återanvänder tider i boknings-URL:er, så vi
  * arbetar på hela texten: ta utresetabellen (= ankomster TILL Trelleborg), klipp ut dygnsblocket,
  * strippa länkar (annars dubbelräknas tider) och para ihop avgång/ankomst. Andra tiden = ankomst.
+ * Operatören (TT-Line/Stena) läses från sidan så samma parser fungerar för alla e-ferry-rutter.
  */
-const parseTTLine = (markdown, targetDate, routeId) => {
+const operatorFromText = (text) => {
+  if (/stena/i.test(text)) return "Stena Line";
+  if (/tt-?line/i.test(text)) return "TT-Line";
+  return "Färja";
+};
+
+const parseSchedule = (markdown, targetDate, routeId) => {
   const out = [];
   const dayToken = new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(targetDate);
   const dateToken = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, "0")}-${String(targetDate.getDate()).padStart(2, "0")}`;
@@ -252,6 +260,7 @@ const parseTTLine = (markdown, targetDate, routeId) => {
 
   const titleMatch = text.match(/([A-Za-zÀ-ÿ.\- ]+?),\s*Germany\s*-\s*Trelleborg/i);
   const origin = titleMatch ? titleMatch[1].trim() : `route ${routeId}`;
+  const operator = operatorFromText(outbound);
 
   const times = Array.from(block.matchAll(/(\d{2}:\d{2})(\^?)/g)).map((m) => ({
     time: m[1],
@@ -263,10 +272,10 @@ const parseTTLine = (markdown, targetDate, routeId) => {
     const t = parseDate(`${dateToken} ${arr.time}`);
     if (!t || !isSameDay(t, targetDate)) continue;
     out.push({
-      vesselName: `TT-Line ${origin}–Trelleborg`,
+      vesselName: `${operator} ${origin}–Trelleborg`,
       plannedTime: t,
       status: statusFromEta(t),
-      source: `TT-Line tidtabell (${origin}–Trelleborg, ej AIS-bekräftad)`,
+      source: `${operator} tidtabell (${origin}–Trelleborg, ej AIS-bekräftad)`,
       feedKind: "expected",
     });
   }
@@ -416,16 +425,16 @@ exports.handler = async (event) => {
     ...(estimatePack.ok ? parseEstimate(estimatePack.text, port, targetDate, includeAll) : []),
   ];
 
-  if (port === "trelleborg" && Array.isArray(cfg.ttlineRouteIds)) {
+  if (port === "trelleborg" && Array.isArray(cfg.scheduleRouteIds)) {
     const packs = await Promise.all(
-      cfg.ttlineRouteIds.map((id) =>
+      cfg.scheduleRouteIds.map((id) =>
         fetchWithRetry(
           `https://r.jina.ai/http://www.e-ferry.eu/pub/default.aspx?Date=${date}&ID=${id}&L=EN&Page=WeekDay`
         )
       )
     );
     for (let i = 0; i < packs.length; i++) {
-      if (packs[i].ok) rows.push(...parseTTLine(packs[i].text, targetDate, cfg.ttlineRouteIds[i]));
+      if (packs[i].ok) rows.push(...parseSchedule(packs[i].text, targetDate, cfg.scheduleRouteIds[i]));
     }
   }
 

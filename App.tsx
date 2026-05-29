@@ -97,7 +97,8 @@ const AUTO_REFRESH_MS = 30_000;
 const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 2_500;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 3;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
-const TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND = [241, 243] as const;
+/** e-ferry route-ID för ankomster TILL Trelleborg: 241 TT-Line Rostock, 243 TT-Line Travemünde, 222 Stena Rostock. */
+const TRELLEBORG_SCHEDULE_ROUTE_IDS = [241, 243, 222] as const;
 const CORE_FETCH_TIMEOUT_MS = 12_000;
 
 const fetchTextSafe = async (
@@ -727,6 +728,11 @@ const parseTTLineScheduleForDate = (
 
   const titleMatch = markdown.match(/([A-Za-zÀ-ÿ.\- ]+?),\s*Germany\s*-\s*Trelleborg/i);
   const origin = titleMatch ? titleMatch[1].trim() : `route ${routeId}`;
+  const operator = /stena/i.test(outbound)
+    ? "Stena Line"
+    : /tt-?line/i.test(outbound)
+      ? "TT-Line"
+      : "Färja";
 
   const matches = Array.from(block.matchAll(/(\d{2}:\d{2})(\^?)/g)).map((m) => ({
     time: m[1],
@@ -742,11 +748,11 @@ const parseTTLineScheduleForDate = (
       continue;
     }
     results.push({
-      id: `trelleborg-ttline-${routeId}-${plannedTime.toISOString()}`,
-      vesselName: `TT-Line ${origin}–Trelleborg`,
+      id: `trelleborg-sched-${routeId}-${plannedTime.toISOString()}`,
+      vesselName: `${operator} ${origin}–Trelleborg`,
       plannedTime,
       status: getStatusFromEta(plannedTime),
-      source: `TT-Line tidtabell (${origin}–Trelleborg, ej AIS-bekräftad)`,
+      source: `${operator} tidtabell (${origin}–Trelleborg, ej AIS-bekräftad)`,
       feedKind: "expected",
     });
   }
@@ -1068,7 +1074,7 @@ export default function App() {
               let ttRows: FerryArrival[] = [];
               if (selectedPort === "trelleborg") {
                 const schedulePacks = await Promise.all(
-                  TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND.map((routeId) =>
+                  TRELLEBORG_SCHEDULE_ROUTE_IDS.map((routeId) =>
                     fetchTextSafeWithTimeout(
                       `https://r.jina.ai/http://www.e-ferry.eu/pub/default.aspx?Date=${dateIsoLocal(targetDate)}&ID=${routeId}&L=EN&Page=WeekDay`
                     )
@@ -1083,7 +1089,7 @@ export default function App() {
                       ? parseTTLineScheduleForDate(
                           pack.text,
                           targetDate,
-                          TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND[idx]
+                          TRELLEBORG_SCHEDULE_ROUTE_IDS[idx]
                         )
                       : []
                   )
@@ -1506,7 +1512,7 @@ export default function App() {
           </Text>
           {selectedPort === "trelleborg" ? (
             <Text style={styles.sourcesPMuted}>
-              För Trelleborg 10 maj i MST:s utdrag (vid senaste kontroll): estimate-tabellen kunde vara tom samtidigt som anropslistan visade passagerarfärjeankomster tidigt på dygnet — senare turer kan saknas tills de dyker i feeden eller finns bara hos rederiet (TT-Line).
+              MST:s ETA-lista visar bara fartyg som redan är till sjöss (AIS), så eftermiddags-/kvällsturer saknas där. För att täcka hela dygnet kompletterar vi med rederiernas tidtabeller via e-ferry.eu: TT-Line (Rostock & Travemünde) och Stena Line (Rostock). Tidtabellsrader är märkta ”ej AIS-bekräftad” och döljs automatiskt när en riktig AIS-ankomst täcker samma tid.
             </Text>
           ) : null}
         </View>
