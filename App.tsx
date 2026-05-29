@@ -100,9 +100,12 @@ const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
 const TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND = [241, 243] as const;
 const CORE_FETCH_TIMEOUT_MS = 12_000;
 
-const fetchTextSafe = async (url: string): Promise<{ ok: boolean; text: string }> => {
+const fetchTextSafe = async (
+  url: string,
+  signal?: AbortSignal
+): Promise<{ ok: boolean; text: string }> => {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, signal ? { signal } : undefined);
     const text = await response.text();
     return { ok: response.ok, text };
   } catch {
@@ -113,12 +116,13 @@ const fetchTextSafeWithTimeout = async (
   url: string,
   timeoutMs = CORE_FETCH_TIMEOUT_MS
 ): Promise<{ ok: boolean; text: string }> => {
-  return Promise.race([
-    fetchTextSafe(url),
-    new Promise<{ ok: boolean; text: string }>((resolve) =>
-      setTimeout(() => resolve({ ok: false, text: "" }), timeoutMs)
-    ),
-  ]);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchTextSafe(url, controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 const withMirrorVariants = (url: string): string[] => {
@@ -830,15 +834,22 @@ const statusLabel: Record<FerryStatus, string> = {
   delayed: "Försenad (ej bekräftad)",
 };
 
+const SERVER_FETCH_TIMEOUT_MS = 13_000;
+
 const fetchServerAggregated = async (
   portId: PortId,
   date: Date,
   includeAllVessels = false
 ): Promise<{ ok: boolean; arrivals: FerryArrival[] }> => {
   const dateParam = dateIsoLocal(date);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SERVER_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(
-      `/.netlify/functions/ferries?port=${portId}&date=${dateParam}&all=${includeAllVessels ? 1 : 0}`
+      `/.netlify/functions/ferries?port=${encodeURIComponent(portId)}&date=${encodeURIComponent(
+        dateParam
+      )}&all=${includeAllVessels ? 1 : 0}`,
+      { signal: controller.signal }
     );
     if (!res.ok) {
       return { ok: false, arrivals: [] };
@@ -850,14 +861,23 @@ const fetchServerAggregated = async (
         }
       >;
     };
-    const parsed =
-      json.arrivals?.map((r) => ({
-        ...r,
-        plannedTime: parseDate(r.plannedTime) ?? new Date(r.plannedTime),
-      })) ?? [];
+    const parsed: FerryArrival[] = [];
+    for (const r of json.arrivals ?? []) {
+      if (!r || typeof r.plannedTime !== "string" || typeof r.vesselName !== "string") {
+        continue;
+      }
+      const plannedTime = parseDate(r.plannedTime);
+      if (!plannedTime) {
+        // Hoppa över rader vi inte kan tolka istället för att skapa Invalid Date.
+        continue;
+      }
+      parsed.push({ ...r, plannedTime });
+    }
     return { ok: true, arrivals: parsed };
   } catch {
     return { ok: false, arrivals: [] };
+  } finally {
+    clearTimeout(timer);
   }
 };
 
@@ -1034,7 +1054,7 @@ export default function App() {
               if (selectedPort === "trelleborg") {
                 const schedulePacks = await Promise.all(
                   TRELLEBORG_TTLINE_TIMETABLE_ID_INBOUND.map((routeId) =>
-                    fetchTextSafe(
+                    fetchTextSafeWithTimeout(
                       `https://r.jina.ai/http://www.e-ferry.eu/pub/default.aspx?Date=${dateIsoLocal(targetDate)}&ID=${routeId}&L=EN&Page=WeekDay`
                     )
                   )
@@ -1084,25 +1104,11 @@ export default function App() {
         if (selectedPort === "helsingborg" && selectedPortConfig.trafficUrl) {
           const trafficUrl = selectedPortConfig.trafficUrl;
           void (async () => {
-            try {
-              const trafficResponse = await fetch(trafficUrl);
-              if (fetchGenerationRef.current !== generation) {
-                return;
-              }
-              if (trafficResponse.ok) {
-                const trafficText = await trafficResponse.text();
-                if (fetchGenerationRef.current !== generation) {
-                  return;
-                }
-                setTrafficInfo(extractOresundTrafficInfo(trafficText));
-              } else {
-                setTrafficInfo(null);
-              }
-            } catch {
-              if (fetchGenerationRef.current === generation) {
-                setTrafficInfo(null);
-              }
+            const trafficPack = await fetchTextSafeWithTimeout(trafficUrl);
+            if (fetchGenerationRef.current !== generation) {
+              return;
             }
+            setTrafficInfo(trafficPack.ok ? extractOresundTrafficInfo(trafficPack.text) : null);
           })();
         } else {
           setTrafficInfo(null);
