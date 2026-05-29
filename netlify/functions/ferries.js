@@ -44,6 +44,8 @@ const PORTS = {
     arrivalsUrl:
       "https://r.jina.ai/http://www.myshiptracking.com/ports-arrivals-departures/?pid=2225&type=1",
     estimateUrl: "https://r.jina.ai/http://www.myshiptracking.com/estimate?pid=2225",
+    // e-ferry route 212 = Świnoujście→Ystad (Unity Line/Polferries). Bornholmslinjen (Rønne) saknas på e-ferry.
+    scheduleRouteIds: [212],
   },
 };
 
@@ -72,7 +74,24 @@ const KEYWORDS = {
     "mercuria",
     "uraniborg",
   ],
-  ystad: ["polonia", "varsovia", "mazovia", "skania", "galileusz", "wolin", "cracovia"],
+  ystad: [
+    "polonia",
+    "varsovia",
+    "mazovia",
+    "skania",
+    "galileusz",
+    "wolin",
+    "cracovia",
+    "jupiter",
+    // Bornholmslinjen (Rønne–Ystad): fartygen finns inte i någon e-ferry-tidtabell, så vi tar dem via AIS.
+    "express 1",
+    "express 4",
+    "express 5",
+    "hammershus",
+    "villum clausen",
+    "max mols",
+    "povl anker",
+  ],
 };
 
 const timeoutFetchText = async (url, timeoutMs = 12000) => {
@@ -239,6 +258,8 @@ const parseEstimate = (markdown, port, targetDate, includeAll = false) => {
 const operatorFromText = (text) => {
   if (/stena/i.test(text)) return "Stena Line";
   if (/tt-?line/i.test(text)) return "TT-Line";
+  if (/unity/i.test(text)) return "Unity Line";
+  if (/polferries|polsca/i.test(text)) return "Polferries";
   return "Färja";
 };
 
@@ -258,8 +279,12 @@ const parseSchedule = (markdown, targetDate, routeId) => {
   const rawBlock = nextDay === -1 ? after : after.slice(0, nextDay);
   const block = rawBlock.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
 
-  const titleMatch = text.match(/([A-Za-zÀ-ÿ.\- ]+?),\s*Germany\s*-\s*Trelleborg/i);
+  // Titeln ser ut som "Rostock, Germany - Trelleborg, Sweden" / "Swinoujscie, Poland - Ystad, Sweden".
+  const titleMatch = text.match(
+    /([A-Za-zÀ-ÿ.\- ]+?),\s*[A-Za-z]+\s*-\s*([A-Za-zÀ-ÿ.\- ]+?),\s*Sweden/i
+  );
   const origin = titleMatch ? titleMatch[1].trim() : `route ${routeId}`;
+  const dest = titleMatch ? titleMatch[2].trim() : "Sverige";
   const operator = operatorFromText(outbound);
 
   const times = Array.from(block.matchAll(/(\d{2}:\d{2})(\^?)/g)).map((m) => ({
@@ -272,10 +297,10 @@ const parseSchedule = (markdown, targetDate, routeId) => {
     const t = parseDate(`${dateToken} ${arr.time}`);
     if (!t || !isSameDay(t, targetDate)) continue;
     out.push({
-      vesselName: `${operator} ${origin}–Trelleborg`,
+      vesselName: `${operator} ${origin}–${dest}`,
       plannedTime: t,
       status: statusFromEta(t),
-      source: `${operator} tidtabell (${origin}–Trelleborg, ej AIS-bekräftad)`,
+      source: `${operator} tidtabell (${origin}–${dest}, ej AIS-bekräftad)`,
       feedKind: "expected",
     });
   }
@@ -349,18 +374,19 @@ const reconcile = (rows) => {
     return true;
   });
 
-  // TT-Line-tidtabellsrader är fallback: dölj dem när en riktig AIS-rad (ankommen/ETA) redan
-  // täcker samma tidsfönster (±30 min), så samma tur inte visas dubbelt.
+  // Tidtabellsrader är fallback. Dölj dem bara när en BEKRÄFTAD ankomst (AIS) ligger mycket nära
+  // (±12 min) — då är det samma tur. Snävt fönster så att skilda linjer inte döljer varandra
+  // (t.ex. Bornholmslinjen vs Świnoujście som kan ankomma inom samma halvtimme).
   const isTimetable = (r) => /tidtabell/i.test(r.source || "");
-  const realRows = cleaned.filter((r) => !isTimetable(r));
+  const confirmed = cleaned.filter((r) => r.status === "arrived" && !isTimetable(r));
   const filtered = cleaned.filter((row) => {
     if (!isTimetable(row)) {
       return true;
     }
-    const covered = realRows.some(
+    const covered = confirmed.some(
       (r) =>
         dayKeyOf(r.plannedTime) === dayKeyOf(row.plannedTime) &&
-        Math.abs(r.plannedTime.getTime() - row.plannedTime.getTime()) <= 30 * 60_000
+        Math.abs(r.plannedTime.getTime() - row.plannedTime.getTime()) <= 12 * 60_000
     );
     return !covered;
   });
@@ -425,7 +451,7 @@ exports.handler = async (event) => {
     ...(estimatePack.ok ? parseEstimate(estimatePack.text, port, targetDate, includeAll) : []),
   ];
 
-  if (port === "trelleborg" && Array.isArray(cfg.scheduleRouteIds)) {
+  if (Array.isArray(cfg.scheduleRouteIds) && cfg.scheduleRouteIds.length > 0) {
     const packs = await Promise.all(
       cfg.scheduleRouteIds.map((id) =>
         fetchWithRetry(

@@ -97,8 +97,15 @@ const AUTO_REFRESH_MS = 30_000;
 const ARRIVAL_FETCH_EMPTY_RETRY_PAUSE_MS = 2_500;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_INITIAL = 3;
 const ARRIVAL_FETCH_MAX_ATTEMPTS_REFRESH = 2;
-/** e-ferry route-ID för ankomster TILL Trelleborg: 241 TT-Line Rostock, 243 TT-Line Travemünde, 222 Stena Rostock. */
-const TRELLEBORG_SCHEDULE_ROUTE_IDS = [241, 243, 222] as const;
+/**
+ * e-ferry route-ID för ankomster till respektive svensk hamn (utresetabellen = ankomst hit).
+ * Trelleborg: 241 TT-Line Rostock, 243 TT-Line Travemünde, 222 Stena Rostock.
+ * Ystad: 212 Świnoujście (Unity Line/Polferries). Bornholmslinjen (Rønne) och ForSea (Helsingør) saknas på e-ferry.
+ */
+const SCHEDULE_ROUTE_IDS_BY_PORT: Partial<Record<PortId, number[]>> = {
+  trelleborg: [241, 243, 222],
+  ystad: [212],
+};
 const CORE_FETCH_TIMEOUT_MS = 12_000;
 
 const fetchTextSafe = async (
@@ -468,17 +475,18 @@ const reconcileArrivalList = (rows: FerryArrival[]): FerryArrival[] => {
   }
 
   const combinedRows = [...dedupedArrived, ...keptEta];
-  // TT-Line-tidtabell är fallback: dölj rader som redan täcks av en riktig AIS-rad (±30 min).
+  // Tidtabell är fallback: dölj bara rader som ligger mycket nära en BEKRÄFTAD ankomst (±12 min) —
+  // då är det samma tur. Snävt fönster så att skilda linjer inte döljer varandra.
   const isTimetable = (r: FerryArrival) => /tidtabell/i.test(r.source);
-  const realRows = combinedRows.filter((r) => !isTimetable(r));
+  const confirmed = combinedRows.filter((r) => r.status === "arrived" && !isTimetable(r));
   const deduped = combinedRows.filter((row) => {
     if (!isTimetable(row)) {
       return true;
     }
-    const covered = realRows.some(
+    const covered = confirmed.some(
       (r) =>
         startOfDay(r.plannedTime).getTime() === startOfDay(row.plannedTime).getTime() &&
-        Math.abs(r.plannedTime.getTime() - row.plannedTime.getTime()) <= 30 * 60_000
+        Math.abs(r.plannedTime.getTime() - row.plannedTime.getTime()) <= 12 * 60_000
     );
     return !covered;
   });
@@ -726,13 +734,20 @@ const parseTTLineScheduleForDate = (
   // Strippa länkar så tider i boknings-URL:er inte dubbelräknas.
   const block = rawBlock.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
 
-  const titleMatch = markdown.match(/([A-Za-zÀ-ÿ.\- ]+?),\s*Germany\s*-\s*Trelleborg/i);
+  const titleMatch = markdown.match(
+    /([A-Za-zÀ-ÿ.\- ]+?),\s*[A-Za-z]+\s*-\s*([A-Za-zÀ-ÿ.\- ]+?),\s*Sweden/i
+  );
   const origin = titleMatch ? titleMatch[1].trim() : `route ${routeId}`;
+  const dest = titleMatch ? titleMatch[2].trim() : "Sverige";
   const operator = /stena/i.test(outbound)
     ? "Stena Line"
     : /tt-?line/i.test(outbound)
       ? "TT-Line"
-      : "Färja";
+      : /unity/i.test(outbound)
+        ? "Unity Line"
+        : /polferries|polsca/i.test(outbound)
+          ? "Polferries"
+          : "Färja";
 
   const matches = Array.from(block.matchAll(/(\d{2}:\d{2})(\^?)/g)).map((m) => ({
     time: m[1],
@@ -748,11 +763,11 @@ const parseTTLineScheduleForDate = (
       continue;
     }
     results.push({
-      id: `trelleborg-sched-${routeId}-${plannedTime.toISOString()}`,
-      vesselName: `${operator} ${origin}–Trelleborg`,
+      id: `sched-${routeId}-${plannedTime.toISOString()}`,
+      vesselName: `${operator} ${origin}–${dest}`,
       plannedTime,
       status: getStatusFromEta(plannedTime),
-      source: `${operator} tidtabell (${origin}–Trelleborg, ej AIS-bekräftad)`,
+      source: `${operator} tidtabell (${origin}–${dest}, ej AIS-bekräftad)`,
       feedKind: "expected",
     });
   }
@@ -1072,9 +1087,10 @@ export default function App() {
                 includeAllVessels
               );
               let ttRows: FerryArrival[] = [];
-              if (selectedPort === "trelleborg") {
+              const scheduleRouteIds = SCHEDULE_ROUTE_IDS_BY_PORT[selectedPort];
+              if (scheduleRouteIds && scheduleRouteIds.length > 0) {
                 const schedulePacks = await Promise.all(
-                  TRELLEBORG_SCHEDULE_ROUTE_IDS.map((routeId) =>
+                  scheduleRouteIds.map((routeId) =>
                     fetchTextSafeWithTimeout(
                       `https://r.jina.ai/http://www.e-ferry.eu/pub/default.aspx?Date=${dateIsoLocal(targetDate)}&ID=${routeId}&L=EN&Page=WeekDay`
                     )
@@ -1086,11 +1102,7 @@ export default function App() {
                 ttRows = schedulePacks
                   .map((pack, idx) =>
                     pack.ok
-                      ? parseTTLineScheduleForDate(
-                          pack.text,
-                          targetDate,
-                          TRELLEBORG_SCHEDULE_ROUTE_IDS[idx]
-                        )
+                      ? parseTTLineScheduleForDate(pack.text, targetDate, scheduleRouteIds[idx])
                       : []
                   )
                   .flat();
@@ -1350,8 +1362,10 @@ export default function App() {
         <View style={styles.freeRealtimeBanner}>
           <Text style={styles.freeRealtimeText}>
             {selectedPort === "helsingborg"
-              ? "Helsingborg: hämtar även den separata ETA-sidan (estimate?pid=) — hamnsidans tabell saknar ofta pendelbåtarna. Saknas alla framtida ETA visas ~20-minutersankomster (ungefärligt). Övrigt som förut."
-              : "Vi hämtar hamnsida + anropslista + ETA-sidan estimate?pid= (ofta fler rader än i hamnutdraget). Datumväljaren: igår, idag eller imorgon — passagerarfärjor."}
+              ? "Helsingborg: hämtar även den separata ETA-sidan (estimate?pid=) — hamnsidans tabell saknar ofta pendelbåtarna. Saknas alla framtida ETA visas ~20-minutersankomster (ungefärligt). ForSea har ingen öppen tidtabell att hämta."
+              : selectedPort === "trelleborg"
+                ? "Trelleborg: hamnsida + anropslista + ETA-sidan (AIS) plus hela dygnets tidtabell från TT-Line (Rostock & Travemünde) och Stena Line (Rostock) via e-ferry.eu."
+                : "Ystad: hamnsida + anropslista + ETA-sidan (AIS) plus Świnoujście-tidtabellen (Unity Line/Polferries) via e-ferry.eu. Bornholmslinjen (Rønne) visas via AIS när färjorna är till sjöss."}
           </Text>
         </View>
         {selectedPort === "helsingborg" && trafficInfo ? (
@@ -1512,7 +1526,17 @@ export default function App() {
           </Text>
           {selectedPort === "trelleborg" ? (
             <Text style={styles.sourcesPMuted}>
-              MST:s ETA-lista visar bara fartyg som redan är till sjöss (AIS), så eftermiddags-/kvällsturer saknas där. För att täcka hela dygnet kompletterar vi med rederiernas tidtabeller via e-ferry.eu: TT-Line (Rostock & Travemünde) och Stena Line (Rostock). Tidtabellsrader är märkta ”ej AIS-bekräftad” och döljs automatiskt när en riktig AIS-ankomst täcker samma tid.
+              MST:s ETA-lista visar bara fartyg som redan är till sjöss (AIS), så eftermiddags-/kvällsturer saknas där. För att täcka hela dygnet kompletterar vi med rederiernas tidtabeller via e-ferry.eu: TT-Line (Rostock & Travemünde) och Stena Line (Rostock). Tidtabellsrader är märkta ”ej AIS-bekräftad” och döljs automatiskt när en riktig AIS-ankomst ligger inom ±12 min.
+            </Text>
+          ) : null}
+          {selectedPort === "ystad" ? (
+            <Text style={styles.sourcesPMuted}>
+              Hela dygnets Świnoujście–Ystad-turer hämtas från e-ferry.eu (Unity Line/Polferries) och märks ”ej AIS-bekräftad”. Bornholmslinjen (Rønne–Ystad) finns inte i någon öppen tidtabell vi kan hämta, så de färjorna (t.ex. Express 5) visas via AIS först när de är till sjöss.
+            </Text>
+          ) : null}
+          {selectedPort === "helsingborg" ? (
+            <Text style={styles.sourcesPMuted}>
+              ForSea/Öresundslinjen publicerar ingen öppen tidtabell vi kan hämta automatiskt. Vi visar AIS-ankomster och, när framtida ETA saknas, en ungefärlig ~20-minuterslista. Öppna Öresundslinjens egen tidtabell för exakta tider.
             </Text>
           ) : null}
         </View>
